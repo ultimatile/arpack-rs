@@ -61,6 +61,14 @@ impl Default for Options {
 ///
 /// Returns `(eigenvalue, eigenvector)`. The eigenvector is normalized
 /// per ARPACK's convention (unit 2-norm).
+///
+/// # Allocation
+///
+/// Workspace sizes scale as `O(n * ncv)`. Inputs whose byte size exceeds
+/// `isize::MAX` (relevant in practice only on 32-bit targets) cause the
+/// underlying `Vec` allocations to panic rather than return
+/// [`Error::InvalidParam`] — this matches the standard library's own
+/// allocation-failure convention.
 pub fn smallest_eigenpair_f64<F>(
     n: usize,
     matvec: F,
