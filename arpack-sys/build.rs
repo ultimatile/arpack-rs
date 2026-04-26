@@ -1,12 +1,78 @@
-// Locate ARPACK-NG via pkg-config and emit link directives.
+// Locate ARPACK-NG via pkg-config, verify ABI compatibility, and emit
+// link directives.
 //
 // Bindings are pre-generated and committed at `src/bindings.rs`, so this
-// build script only handles linkage. To regenerate bindings, run the
-// `regen-bindings.sh` script at the workspace root.
+// build script only handles linkage and an integer-ABI sanity check.
+// To regenerate bindings, run `regen-bindings.sh` at the workspace root.
+
+use std::fs;
+use std::path::PathBuf;
 
 fn main() {
-    pkg_config::Config::new()
+    let lib = pkg_config::Config::new()
         .atleast_version("3.8.0")
         .probe("arpack")
         .expect("pkg-config could not locate ARPACK-NG (>= 3.8.0). Install it (e.g. `brew install arpack`) and ensure its .pc file is on PKG_CONFIG_PATH.");
+
+    verify_default_integer_abi(&lib.include_paths);
+}
+
+// The committed bindings target ARPACK-NG's default 32-bit integer ABI
+// (`a_int = int`). A library built with `INTERFACE64=1` exposes the same
+// symbol names but with 64-bit `a_int`, which would corrupt memory when
+// the wrapper passes 32-bit ints / pointers. Read `arpackdef.h` and bail
+// out at build time rather than letting the mismatch surface at runtime.
+fn verify_default_integer_abi(include_paths: &[PathBuf]) {
+    let mut header = None;
+    for dir in include_paths {
+        let candidate = dir.join("arpackdef.h");
+        if candidate.exists() {
+            header = Some(candidate);
+            break;
+        }
+    }
+    let Some(header) = header else {
+        panic!(
+            "could not find arpackdef.h in pkg-config include paths ({:?}); cannot verify ARPACK integer ABI",
+            include_paths
+        );
+    };
+    println!("cargo:rerun-if-changed={}", header.display());
+
+    let content = fs::read_to_string(&header)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", header.display()));
+    // Walk every `#define` line — the first one in the header is the
+    // include guard, not the macro we want.
+    let value: Option<&str> = content
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix("#define"))
+        .find_map(|rest| {
+            let mut tokens = rest.split_whitespace();
+            match tokens.next() {
+                Some("INTERFACE64") => tokens.next(),
+                _ => None,
+            }
+        });
+
+    match value {
+        Some("0") => {}
+        Some("1") => panic!(
+            "ARPACK-NG at {} was built with INTERFACE64=1 (64-bit a_int). \
+             The committed arpack-sys bindings target the default 32-bit ABI, \
+             so using a 64-bit-ABI build would silently corrupt memory. \
+             Rebuild ARPACK-NG with INTERFACE64=0 (the upstream default) \
+             or open an issue if 64-bit-ABI support is needed.",
+            header.display()
+        ),
+        Some(other) => panic!(
+            "unrecognized INTERFACE64 value '{other}' in {}; expected 0 or 1",
+            header.display()
+        ),
+        None => panic!(
+            "could not locate `#define INTERFACE64` in {}; the installed ARPACK-NG \
+             header may be too old or non-standard",
+            header.display()
+        ),
+    }
 }
