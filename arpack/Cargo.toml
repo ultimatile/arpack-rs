@@ -1,0 +1,10 @@
+[package]
+name = "arpack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Safe Rust wrapper around ARPACK-NG"
+
+[dependencies]
+arpack-sys = { path = "../arpack-sys", version = "0.0.1" }
