@@ -35,9 +35,12 @@ pub struct Options {
     pub tol: f64,
     /// Maximum number of restart iterations.
     pub max_iter: usize,
-    /// Krylov-subspace dimension `ncv`. Must satisfy `nev < ncv <= n`.
-    /// `None` selects `min(2*nev + 4, n)`, which gives the canonical
-    /// "twice the requested count plus a small margin" recommendation.
+    /// Krylov-subspace dimension `ncv`. Must satisfy
+    /// `nev < ncv < n` — the strict upper bound (rather than the
+    /// `<= n` permitted by the ARPACK manual) ensures IRLM has at
+    /// least one free Krylov dimension to restart against; the
+    /// upstream code returns `info = -9999` when `ncv == n`.
+    /// `None` selects `min(2*nev + 4, n - 1)` floored at `nev + 1`.
     pub ncv: Option<usize>,
 }
 
@@ -67,30 +70,55 @@ where
     F: FnMut(&[f64], &mut [f64]),
 {
     let nev: c_int = 1;
-    // Need at least nev + 2 dimensions for IRLM to have any room to
-    // restart. Anything below that is a misuse of ARPACK.
-    if n < nev as usize + 2 {
-        return Err(Error::InvalidParam("n is too small for ARPACK (require n >= nev + 2)"));
+    let nev_usize = nev as usize;
+    // The wrapper enforces a strict `ncv < n` ceiling so IRLM always
+    // has at least one free Krylov dimension to restart against; this
+    // requires `n >= nev + 2` so the smallest legal `ncv` (`nev + 1`)
+    // still fits below `n`.
+    if n < nev_usize + 2 {
+        return Err(Error::InvalidParam(
+            "n too small for ARPACK (require n >= nev + 2)",
+        ));
     }
-    // Default heuristic: 2*nev + 4 Krylov vectors, capped strictly
-    // below n so IRLM has restart room, with a floor of nev + 2.
+    // Default: target `2*nev + 4` Krylov vectors, capped strictly
+    // below `n` and floored at `nev + 1`. The previous floor of
+    // `nev + 2` was too conservative — for `n = nev + 2` it lifted
+    // `ncv` back up to `n`, defeating the ceiling.
     let ncv = options.ncv.unwrap_or_else(|| {
-        (2 * nev as usize + 4).min(n - 1).max(nev as usize + 2)
+        (2 * nev_usize + 4).min(n - 1).max(nev_usize + 1)
     });
 
     let n_i32 = c_int_from_usize(n, "n")?;
     let ncv_i32 = c_int_from_usize(ncv, "ncv")?;
     let max_iter_i32 = c_int_from_usize(options.max_iter, "max_iter")?;
 
-    if !(nev > 0 && nev < ncv_i32 && ncv_i32 <= n_i32) {
-        return Err(Error::InvalidParam("require 0 < nev < ncv <= n"));
+    if !(nev > 0 && nev < ncv_i32 && ncv_i32 < n_i32) {
+        return Err(Error::InvalidParam("require 0 < nev < ncv < n"));
     }
     if max_iter_i32 <= 0 {
         return Err(Error::InvalidParam("max_iter must be positive"));
     }
 
+    // All buffer allocations multiply user-controlled `n` and `ncv`.
+    // On 32-bit targets these products can overflow `usize` even
+    // though the individual values pass the `c_int` range check, so
+    // verify each one explicitly before requesting allocations that
+    // ARPACK will then index using the un-overflowed `n` / `ncv`.
+    let v_len = n.checked_mul(ncv).ok_or(Error::InvalidParam(
+        "n * ncv overflows usize",
+    ))?;
+    let workd_len = n.checked_mul(3).ok_or(Error::InvalidParam(
+        "3 * n overflows usize",
+    ))?;
+    let lworkl = ncv
+        .checked_add(8)
+        .and_then(|s| ncv.checked_mul(s))
+        .ok_or(Error::InvalidParam(
+            "ncv * (ncv + 8) overflows usize",
+        ))?;
+
     let mut resid = vec![0.0f64; n];
-    let mut v = vec![0.0f64; n * ncv];
+    let mut v = vec![0.0f64; v_len];
     let ldv = n_i32;
     let mut iparam = [0i32; 11];
     iparam[0] = 1; // exact shifts via ARPACK
@@ -98,8 +126,7 @@ where
     iparam[3] = 1; // NB block size; ARPACK only supports NB = 1
     iparam[6] = 1; // mode 1: standard problem A x = lambda x
     let mut ipntr = [0i32; 11];
-    let mut workd = vec![0.0f64; 3 * n];
-    let lworkl = ncv * (ncv + 8);
+    let mut workd = vec![0.0f64; workd_len];
     let lworkl_i32 = c_int_from_usize(lworkl, "lworkl")?;
     let mut workl = vec![0.0f64; lworkl];
 
