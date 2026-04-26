@@ -117,6 +117,12 @@ where
             "ncv * (ncv + 8) overflows usize",
         ))?;
 
+    // Convert every length we need to pass into ARPACK to `c_int`
+    // *before* requesting allocations. This keeps the failure mode
+    // for absurdly-large inputs as a fast `InvalidParam` rather than
+    // an OOM after committing to multi-gigabyte vectors.
+    let lworkl_i32 = c_int_from_usize(lworkl, "lworkl")?;
+
     let mut resid = vec![0.0f64; n];
     let mut v = vec![0.0f64; v_len];
     let ldv = n_i32;
@@ -127,7 +133,6 @@ where
     iparam[6] = 1; // mode 1: standard problem A x = lambda x
     let mut ipntr = [0i32; 11];
     let mut workd = vec![0.0f64; workd_len];
-    let lworkl_i32 = c_int_from_usize(lworkl, "lworkl")?;
     let mut workl = vec![0.0f64; lworkl];
 
     let bmat = c"I".as_ptr();

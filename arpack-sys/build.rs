@@ -42,18 +42,23 @@ fn verify_default_integer_abi(include_paths: &[PathBuf]) {
     let content = fs::read_to_string(&header)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", header.display()));
     // Walk every `#define` line — the first one in the header is the
-    // include guard, not the macro we want.
-    let value: Option<&str> = content
+    // include guard, not the macro we want. Tolerate whitespace
+    // between `#` and `define` and strip trailing `//` or `/* */`
+    // comments and surrounding parentheses from the macro value so
+    // distro-patched headers with different formatting still parse.
+    let raw_value: Option<String> = content
         .lines()
         .map(str::trim)
-        .filter_map(|l| l.strip_prefix("#define"))
+        .filter_map(|l| l.strip_prefix('#').map(str::trim_start))
+        .filter_map(|l| l.strip_prefix("define"))
         .find_map(|rest| {
             let mut tokens = rest.split_whitespace();
             match tokens.next() {
-                Some("INTERFACE64") => tokens.next(),
+                Some("INTERFACE64") => tokens.next().map(str::to_owned),
                 _ => None,
             }
         });
+    let value = raw_value.as_deref().map(strip_macro_decoration);
 
     match value {
         Some("0") => {}
@@ -75,4 +80,22 @@ fn verify_default_integer_abi(include_paths: &[PathBuf]) {
             header.display()
         ),
     }
+}
+
+/// Strip wrapping parentheses, trailing `//...` or `/* ... */`
+/// comments, and surrounding whitespace from a `#define` value token.
+/// Conservative — only handles forms that occur in real headers; it is
+/// not a full C preprocessor.
+fn strip_macro_decoration(raw: &str) -> &str {
+    let mut s = raw.trim();
+    if let Some(pos) = s.find("//") {
+        s = s[..pos].trim();
+    }
+    if let Some(pos) = s.find("/*") {
+        s = s[..pos].trim();
+    }
+    while let (Some(stripped_start), true) = (s.strip_prefix('('), s.ends_with(')')) {
+        s = stripped_start.strip_suffix(')').unwrap_or(stripped_start).trim();
+    }
+    s
 }
