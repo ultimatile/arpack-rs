@@ -2,7 +2,7 @@
 //! analytical (diagonal / tridiagonal) so the smallest eigenvalue is
 //! known in closed form.
 
-use arpack::{Options, smallest_eigenpair_f64};
+use arpack::{Error, Options, smallest_eigenpair_f64};
 
 #[test]
 fn diagonal_matrix_returns_smallest() {
@@ -74,5 +74,51 @@ fn tridiagonal_matrix_matches_analytical_smallest() {
     assert!(
         rel_err < 1e-9,
         "lambda = {lambda}, expected {lambda_min_expected}, rel_err = {rel_err}"
+    );
+}
+
+#[test]
+fn explicit_ncv_equal_to_n_is_rejected() {
+    // ARPACK fails with info = -9999 when ncv == n because IRLM has no
+    // restart room. The wrapper must reject that configuration up front
+    // rather than letting the upstream error surface as a runtime
+    // failure deep in the reverse-communication loop.
+    let n = 8;
+    let result = smallest_eigenpair_f64(
+        n,
+        |_x, _y| unreachable!("matvec should not run when params are rejected"),
+        &Options {
+            tol: 0.0,
+            max_iter: 100,
+            ncv: Some(n),
+        },
+    );
+    assert!(matches!(result, Err(Error::InvalidParam(_))));
+}
+
+#[test]
+fn boundary_n_equals_nev_plus_two_uses_default_ncv() {
+    // With n = nev + 2 = 3 the only legal default ncv is nev + 1 = 2.
+    // The earlier heuristic (floor `nev + 2`) would have produced
+    // ncv = n = 3 here and triggered the upstream -9999 failure.
+    let n = 3;
+    let diag = [1.0_f64, 4.0, 9.0]; // smallest eigenvalue = 1.0
+    let (lambda, _vector) = smallest_eigenpair_f64(
+        n,
+        |x, y| {
+            for i in 0..n {
+                y[i] = diag[i] * x[i];
+            }
+        },
+        &Options {
+            tol: 1e-12,
+            max_iter: 100,
+            ncv: None,
+        },
+    )
+    .expect("driver should converge at the smallest legal n");
+    assert!(
+        (lambda - 1.0).abs() < 1e-10,
+        "lambda = {lambda} (expected 1.0)"
     );
 }
