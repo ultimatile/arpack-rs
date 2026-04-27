@@ -17,4 +17,4 @@ pub use error::Error;
 // callers do not need to update their imports. The Arnoldi module's
 // own `Options` lives at `arpack::arnoldi::Options` to avoid
 // colliding with the symmetric one re-exported here.
-pub use symmetric::{Options, smallest_eigenpair_f64};
+pub use symmetric::{Options, smallest_eigenpair_f32, smallest_eigenpair_f64};

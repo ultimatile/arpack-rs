@@ -12,7 +12,7 @@
 
 use std::os::raw::c_int;
 
-use arpack_sys::{dsaupd_c, dseupd_c};
+use arpack_sys::{dsaupd_c, dseupd_c, ssaupd_c, sseupd_c};
 
 use crate::error::Error;
 use crate::lock::lock;
@@ -235,6 +235,170 @@ where
 
     let value = d[0];
     let mut vector = vec![0.0f64; n];
+    vector.copy_from_slice(&v[..n]);
+    Ok((value, vector))
+}
+
+/// Smallest algebraic eigenpair of a real symmetric operator, f32
+/// precision. See [`smallest_eigenpair_f64`] for the long-form
+/// contract; this entry point is identical except for the working
+/// precision, and accepts the tolerance as `f64` to keep
+/// [`Options`] uniform across precisions (the value is cast to
+/// `f32` at the FFI boundary).
+///
+/// f32 precision in eigenvalue computation is rarely useful for
+/// production work — the achievable convergence is bounded by the
+/// scalar's relative epsilon (~`1.2e-7`). This entry point exists
+/// for completeness and for callers (e.g. mixed-precision
+/// pipelines, GPU staging) that produce f32 operators.
+pub fn smallest_eigenpair_f32<F>(
+    n: usize,
+    matvec: F,
+    options: &Options,
+) -> Result<(f32, Vec<f32>), Error>
+where
+    F: FnMut(&[f32], &mut [f32]),
+{
+    let nev: c_int = 1;
+    let nev_usize = nev as usize;
+    if n < nev_usize + 2 {
+        return Err(Error::InvalidParam(
+            "n too small for ARPACK (require n >= nev + 2)",
+        ));
+    }
+    let ncv = options
+        .ncv
+        .unwrap_or_else(|| (2 * nev_usize + 4).min(n - 1).max(nev_usize + 1));
+
+    let n_i32 = c_int_from_usize(n, "n")?;
+    let ncv_i32 = c_int_from_usize(ncv, "ncv")?;
+    let max_iter_i32 = c_int_from_usize(options.max_iter, "max_iter")?;
+
+    if !(nev > 0 && nev < ncv_i32 && ncv_i32 < n_i32) {
+        return Err(Error::InvalidParam("require 0 < nev < ncv < n"));
+    }
+    if max_iter_i32 <= 0 {
+        return Err(Error::InvalidParam("max_iter must be positive"));
+    }
+
+    let v_len = n
+        .checked_mul(ncv)
+        .ok_or(Error::InvalidParam("n * ncv overflows usize"))?;
+    let workd_len = n
+        .checked_mul(3)
+        .ok_or(Error::InvalidParam("3 * n overflows usize"))?;
+    let lworkl = ncv
+        .checked_add(8)
+        .and_then(|s| ncv.checked_mul(s))
+        .ok_or(Error::InvalidParam("ncv * (ncv + 8) overflows usize"))?;
+
+    let lworkl_i32 = c_int_from_usize(lworkl, "lworkl")?;
+
+    let tol = options.tol as f32;
+    let mut resid = vec![0.0f32; n];
+    let mut v = vec![0.0f32; v_len];
+    let ldv = n_i32;
+    let mut iparam = [0i32; 11];
+    iparam[0] = 1;
+    iparam[2] = max_iter_i32;
+    iparam[3] = 1;
+    iparam[6] = 1;
+    let mut ipntr = [0i32; 11];
+    let mut workd = vec![0.0f32; workd_len];
+    let mut workl = vec![0.0f32; lworkl];
+
+    let bmat = c"I".as_ptr();
+    let which = c"SA".as_ptr();
+
+    let _guard = lock();
+
+    let mut ido: c_int = 0;
+    let mut info: c_int = 0;
+    let mut matvec = matvec;
+    let mut x_buf = vec![0.0f32; n];
+
+    loop {
+        // SAFETY: identical reasoning to `smallest_eigenpair_f64`,
+        // with `f32` storage instead of `f64`.
+        unsafe {
+            ssaupd_c(
+                &mut ido,
+                bmat,
+                n_i32,
+                which,
+                nev,
+                tol,
+                resid.as_mut_ptr(),
+                ncv_i32,
+                v.as_mut_ptr(),
+                ldv,
+                iparam.as_mut_ptr(),
+                ipntr.as_mut_ptr(),
+                workd.as_mut_ptr(),
+                workl.as_mut_ptr(),
+                lworkl_i32,
+                &mut info,
+            );
+        }
+
+        match ido {
+            -1 | 1 => {
+                let x_off = (ipntr[0] - 1) as usize;
+                let y_off = (ipntr[1] - 1) as usize;
+                debug_assert!(x_off + n <= workd.len() && y_off + n <= workd.len());
+                x_buf.copy_from_slice(&workd[x_off..x_off + n]);
+                matvec(&x_buf, &mut workd[y_off..y_off + n]);
+            }
+            99 => break,
+            other => return Err(Error::UnexpectedIdo(other)),
+        }
+    }
+
+    if info != 0 {
+        return Err(Error::AupdFailed(info));
+    }
+
+    let rvec: c_int = 1;
+    let howmny = c"A".as_ptr();
+    let mut select = vec![0i32; ncv];
+    let mut d = vec![0.0f32; nev as usize];
+    let sigma = 0.0f32;
+    let mut info_eup: c_int = 0;
+
+    // SAFETY: as above; v doubles as z (output eigenvector storage).
+    unsafe {
+        sseupd_c(
+            rvec,
+            howmny,
+            select.as_mut_ptr(),
+            d.as_mut_ptr(),
+            v.as_mut_ptr(),
+            ldv,
+            sigma,
+            bmat,
+            n_i32,
+            which,
+            nev,
+            tol,
+            resid.as_mut_ptr(),
+            ncv_i32,
+            v.as_mut_ptr(),
+            ldv,
+            iparam.as_mut_ptr(),
+            ipntr.as_mut_ptr(),
+            workd.as_mut_ptr(),
+            workl.as_mut_ptr(),
+            lworkl_i32,
+            &mut info_eup,
+        );
+    }
+
+    if info_eup != 0 {
+        return Err(Error::EupdFailed(info_eup));
+    }
+
+    let value = d[0];
+    let mut vector = vec![0.0f32; n];
     vector.copy_from_slice(&v[..n]);
     Ok((value, vector))
 }
