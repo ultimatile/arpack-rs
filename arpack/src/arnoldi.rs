@@ -35,9 +35,12 @@ pub struct Options {
     pub tol: f64,
     /// Maximum number of restart iterations.
     pub max_iter: usize,
-    /// Krylov-subspace dimension `ncv`. See
-    /// [`crate::symmetric::Options::ncv`] for why `ncv < n` is
-    /// enforced strictly.
+    /// Krylov-subspace dimension `ncv`. Must satisfy
+    /// `nev + 2 <= ncv < n` — `zneupd` requires at least two extra
+    /// Krylov vectors for restart-deflation (`ncv - nev >= 2`,
+    /// stricter than the symmetric driver's `ncv > nev`), and
+    /// `ncv == n` would leave IRLM no room to restart. `None`
+    /// selects `min(2*nev + 4, n - 1)` floored at `nev + 2`.
     pub ncv: Option<usize>,
 }
 
@@ -74,21 +77,28 @@ where
 {
     let nev: c_int = 1;
     let nev_usize = nev as usize;
-    if n < nev_usize + 2 {
+    // Complex Arnoldi has a tighter constraint than real symmetric:
+    // `zneupd` rejects `ncv - nev < 2` with `info = -3`, so the
+    // smallest legal `ncv` is `nev + 2` and the precondition on
+    // `n` is `n >= nev + 3` (so `ncv = nev + 2 < n` still holds).
+    if n < nev_usize + 3 {
         return Err(Error::InvalidParam(
-            "n too small for ARPACK (require n >= nev + 2)",
+            "n too small for complex Arnoldi (require n >= nev + 3)",
         ));
     }
     let ncv = options
         .ncv
-        .unwrap_or_else(|| (2 * nev_usize + 4).min(n - 1).max(nev_usize + 1));
+        .unwrap_or_else(|| (2 * nev_usize + 4).min(n - 1).max(nev_usize + 2));
 
     let n_i32 = c_int_from_usize(n)?;
     let ncv_i32 = c_int_from_usize(ncv)?;
     let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 
-    if !(nev > 0 && nev < ncv_i32 && ncv_i32 < n_i32) {
-        return Err(Error::InvalidParam("require 0 < nev < ncv < n"));
+    // Strict `ncv >= nev + 2` and `ncv < n`.
+    if !(nev > 0 && ncv_i32 >= nev + 2 && ncv_i32 < n_i32) {
+        return Err(Error::InvalidParam(
+            "require 0 < nev, nev + 2 <= ncv, and ncv < n",
+        ));
     }
     if max_iter_i32 <= 0 {
         return Err(Error::InvalidParam("max_iter must be positive"));

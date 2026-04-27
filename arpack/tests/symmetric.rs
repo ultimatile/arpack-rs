@@ -2,8 +2,7 @@
 //! analytical (diagonal / tridiagonal) so the smallest eigenvalue is
 //! known in closed form.
 
-use arpack::Error;
-use arpack::symmetric::{Options, smallest_eigenpair_f64};
+use arpack::{Error, Options, smallest_eigenpair_f64};
 
 #[test]
 fn diagonal_matrix_returns_smallest() {
