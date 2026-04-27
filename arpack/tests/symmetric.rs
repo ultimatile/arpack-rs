@@ -140,3 +140,51 @@ fn boundary_n_equals_nev_plus_two_uses_default_ncv() {
         "lambda = {lambda} (expected 1.0)"
     );
 }
+
+#[test]
+fn max_iter_too_small_returns_max_iter_reached() {
+    // Force ARPACK to bail out via the `info = 1` branch. With nev = 1
+    // hardcoded, that always implies `nconv = 0` — the wrapper must
+    // surface `Error::MaxIterReached` rather than calling `*seupd`
+    // (which would quick-return without writing the eigenpair) and
+    // returning a bogus `Ok`.
+    //
+    // The 1D Laplacian on n = 64 has dense low-end spectrum, so a
+    // single restart cycle is nowhere near convergence.
+    let n = 64usize;
+    let result = smallest_eigenpair_f64(
+        n,
+        |x, y| {
+            for i in 0..n {
+                let center = 2.0 * x[i];
+                let left = if i > 0 { -x[i - 1] } else { 0.0 };
+                let right = if i + 1 < n { -x[i + 1] } else { 0.0 };
+                y[i] = center + left + right;
+            }
+        },
+        &Options {
+            tol: 1e-15,
+            max_iter: 1,
+            ncv: None,
+        },
+    );
+
+    match result {
+        Err(Error::MaxIterReached {
+            iters,
+            nconv,
+            n_matvec,
+        }) => {
+            // For nev = 1 hardcoded, nconv must be 0 in this branch
+            // (ARPACK only sets info = 1 when fewer than nev pairs
+            // converged).
+            assert_eq!(nconv, 0, "nev = 1 forces nconv = 0 on max_iter exit");
+            assert!(iters >= 1, "iters should reflect the cap: {iters}");
+            assert!(
+                n_matvec >= 1,
+                "matvec count should be positive on a non-trivial run: {n_matvec}"
+            );
+        }
+        other => panic!("expected MaxIterReached, got {other:?}"),
+    }
+}

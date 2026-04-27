@@ -192,13 +192,23 @@ where
         }
     }
 
-    // ARPACK convention: info < 0 is misuse / numerical failure; info > 0
-    // are non-fatal early-exit conditions. Only `info == 1` (max_iter
-    // reached, partial convergence) is surfaced as a successful return —
-    // the partial state is reported through `nconv` and `iters` in the
-    // returned `EigSolution`. All other non-zero codes are unrecoverable
-    // for the caller (e.g. info = 3 needs a different `ncv`).
-    if !(0..=1).contains(&info) {
+    // ARPACK convention: info < 0 is misuse / numerical failure;
+    // info = 1 means the iteration hit `max_iter` before nev Ritz
+    // pairs converged. Because `nev = 1` is hardcoded here, info = 1
+    // always implies `nconv = 0`, which means `*seupd` quick-returns
+    // without writing `d` / `z` — calling it would silently produce
+    // a zeroed eigenvalue and the first Lanczos basis vector. Surface
+    // this as `Error::MaxIterReached` (with the iparam diagnostics
+    // preserved) instead of a bogus `Ok`. Other non-zero codes are
+    // surfaced as `AupdFailed` (e.g. info = 3 means try a larger ncv).
+    if info == 1 {
+        return Err(Error::MaxIterReached {
+            iters: usize_from_iparam(iparam[2]),
+            nconv: usize_from_iparam(iparam[4]),
+            n_matvec: usize_from_iparam(iparam[8]),
+        });
+    }
+    if info != 0 {
         return Err(Error::AupdFailed(info));
     }
 
@@ -371,9 +381,16 @@ where
         }
     }
 
-    // See `smallest_eigenpair_f64` for the rationale on the `info == 1`
-    // partial-convergence pass-through.
-    if !(0..=1).contains(&info) {
+    // See `smallest_eigenpair_f64` for the rationale on splitting
+    // `info == 1` (max_iter, no usable pair) from generic `AupdFailed`.
+    if info == 1 {
+        return Err(Error::MaxIterReached {
+            iters: usize_from_iparam(iparam[2]),
+            nconv: usize_from_iparam(iparam[4]),
+            n_matvec: usize_from_iparam(iparam[8]),
+        });
+    }
+    if info != 0 {
         return Err(Error::AupdFailed(info));
     }
 

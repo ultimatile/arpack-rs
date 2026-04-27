@@ -205,14 +205,19 @@ where
         }
     }
 
-    // ARPACK convention: info < 0 is misuse / numerical failure; info > 0
-    // are non-fatal early-exit conditions. Only `info == 1` (max_iter
-    // reached, partial convergence) is surfaced as a successful return —
-    // the partial state is reported through `nconv` and `iters` in the
-    // returned `EigSolution`. All other non-zero codes (e.g. info = 3
-    // "no shifts could be applied", which needs a different `ncv`) are
-    // unrecoverable for the caller.
-    if !(0..=1).contains(&info) {
+    // info = 1: max_iter reached. With nev = 1 hardcoded, this always
+    // means nconv = 0, and calling `*neupd` on that state returns
+    // info = -14 ("did not find any eigenvalues to sufficient
+    // accuracy") rather than a usable Ritz pair. Surface as
+    // MaxIterReached with the iparam diagnostics intact.
+    if info == 1 {
+        return Err(Error::MaxIterReached {
+            iters: usize_from_iparam(iparam[2]),
+            nconv: usize_from_iparam(iparam[4]),
+            n_matvec: usize_from_iparam(iparam[8]),
+        });
+    }
+    if info != 0 {
         return Err(Error::AupdFailed(info));
     }
 
@@ -396,9 +401,16 @@ where
         }
     }
 
-    // See `smallest_eigenpair_c64` for the rationale on the `info == 1`
-    // partial-convergence pass-through.
-    if !(0..=1).contains(&info) {
+    // See `smallest_eigenpair_c64` for the rationale on splitting
+    // `info == 1` (max_iter, no usable pair) from generic `AupdFailed`.
+    if info == 1 {
+        return Err(Error::MaxIterReached {
+            iters: usize_from_iparam(iparam[2]),
+            nconv: usize_from_iparam(iparam[4]),
+            n_matvec: usize_from_iparam(iparam[8]),
+        });
+    }
+    if info != 0 {
         return Err(Error::AupdFailed(info));
     }
 
