@@ -5,9 +5,15 @@ use std::fmt;
 /// `info` codes are passed through verbatim from the underlying `*aupd_c`
 /// and `*eupd_c` routines so the caller can interpret them against the
 /// ARPACK Users' Guide. Negative values indicate misuse or numerical
-/// failure; positive values indicate convergence-related conditions
-/// (e.g. `info = 1` from `aupd` means the maximum iteration count was
-/// reached without convergence).
+/// failure; positive values other than `1` indicate non-recoverable
+/// convergence conditions (e.g. `info = 3` from `aupd` means no shifts
+/// could be applied — try increasing `ncv`).
+///
+/// `info = 1` ("max_iter reached, partial convergence") is **not**
+/// surfaced as an error; the wrapper treats it as a successful return
+/// and reports the situation through [`crate::EigSolution::nconv`]
+/// (which will be less than `nev`) and [`crate::EigSolution::iters`]
+/// (which will equal `Options::max_iter`).
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {

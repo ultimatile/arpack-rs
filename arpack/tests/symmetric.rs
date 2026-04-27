@@ -11,7 +11,7 @@ fn diagonal_matrix_returns_smallest() {
     let diag = [-3.0_f64, -1.0, 0.0, 2.0, 5.0];
     let n = diag.len();
 
-    let (lambda, vector) = smallest_eigenpair_f64(
+    let solution = smallest_eigenpair_f64(
         n,
         |x, y| {
             for i in 0..n {
@@ -26,6 +26,8 @@ fn diagonal_matrix_returns_smallest() {
     )
     .expect("ARPACK driver should converge");
 
+    let lambda = solution.eigenvalue;
+    let vector = &solution.eigenvector;
     assert!(
         (lambda + 3.0).abs() < 1e-10,
         "lambda = {lambda} (expected -3)"
@@ -41,6 +43,20 @@ fn diagonal_matrix_returns_smallest() {
         (norm_sq - 1.0).abs() < 1e-10,
         "vector should be unit-normalized; norm^2 = {norm_sq}"
     );
+
+    // The driver should fully converge for this trivial spectrum:
+    // exactly one Ritz pair settles, and ARPACK reports the matvec count.
+    assert_eq!(solution.nconv, 1, "expected full convergence (nconv = 1)");
+    assert!(
+        solution.iters >= 1 && solution.iters <= 200,
+        "iters out of range: {}",
+        solution.iters
+    );
+    assert!(
+        solution.n_matvec >= 1,
+        "matvec count should be positive: {}",
+        solution.n_matvec
+    );
 }
 
 #[test]
@@ -52,7 +68,7 @@ fn tridiagonal_matrix_matches_analytical_smallest() {
     let n = 32usize;
     let lambda_min_expected = 2.0 - 2.0 * (std::f64::consts::PI / (n as f64 + 1.0)).cos();
 
-    let (lambda, _vector) = smallest_eigenpair_f64(
+    let solution = smallest_eigenpair_f64(
         n,
         |x, y| {
             for i in 0..n {
@@ -70,6 +86,7 @@ fn tridiagonal_matrix_matches_analytical_smallest() {
     )
     .expect("ARPACK driver should converge");
 
+    let lambda = solution.eigenvalue;
     let rel_err = (lambda - lambda_min_expected).abs() / lambda_min_expected.abs();
     assert!(
         rel_err < 1e-9,
@@ -103,7 +120,7 @@ fn boundary_n_equals_nev_plus_two_uses_default_ncv() {
     // ncv = n = 3 here and triggered the upstream -9999 failure.
     let n = 3;
     let diag = [1.0_f64, 4.0, 9.0]; // smallest eigenvalue = 1.0
-    let (lambda, _vector) = smallest_eigenpair_f64(
+    let solution = smallest_eigenpair_f64(
         n,
         |x, y| {
             for i in 0..n {
@@ -117,6 +134,7 @@ fn boundary_n_equals_nev_plus_two_uses_default_ncv() {
         },
     )
     .expect("driver should converge at the smallest legal n");
+    let lambda = solution.eigenvalue;
     assert!(
         (lambda - 1.0).abs() < 1e-10,
         "lambda = {lambda} (expected 1.0)"

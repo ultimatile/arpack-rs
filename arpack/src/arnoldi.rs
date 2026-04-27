@@ -23,6 +23,7 @@ use num_complex::{Complex32, Complex64};
 
 use crate::error::Error;
 use crate::lock::lock;
+use crate::solution::{usize_from_iparam, EigSolution};
 
 /// Tunable parameters for the complex Arnoldi driver. The fields
 /// have the same meaning as in [`crate::symmetric::Options`]; the
@@ -71,7 +72,7 @@ pub fn smallest_eigenpair_c64<F>(
     n: usize,
     matvec: F,
     options: &Options,
-) -> Result<(Complex64, Vec<Complex64>), Error>
+) -> Result<EigSolution<Complex64>, Error>
 where
     F: FnMut(&[Complex64], &mut [Complex64]),
 {
@@ -204,7 +205,14 @@ where
         }
     }
 
-    if info != 0 {
+    // ARPACK convention: info < 0 is misuse / numerical failure; info > 0
+    // are non-fatal early-exit conditions. Only `info == 1` (max_iter
+    // reached, partial convergence) is surfaced as a successful return —
+    // the partial state is reported through `nconv` and `iters` in the
+    // returned `EigSolution`. All other non-zero codes (e.g. info = 3
+    // "no shifts could be applied", which needs a different `ncv`) are
+    // unrecoverable for the caller.
+    if !(0..=1).contains(&info) {
         return Err(Error::AupdFailed(info));
     }
 
@@ -254,7 +262,13 @@ where
     let value = d[0];
     let mut vector = vec![zero; n];
     vector.copy_from_slice(&v[..n]);
-    Ok((value, vector))
+    Ok(EigSolution {
+        eigenvalue: value,
+        eigenvector: vector,
+        iters: usize_from_iparam(iparam[2]),
+        nconv: usize_from_iparam(iparam[4]),
+        n_matvec: usize_from_iparam(iparam[8]),
+    })
 }
 
 /// Smallest-real-part eigenpair of a complex linear operator, f32
@@ -267,7 +281,7 @@ pub fn smallest_eigenpair_c32<F>(
     n: usize,
     matvec: F,
     options: &Options,
-) -> Result<(Complex32, Vec<Complex32>), Error>
+) -> Result<EigSolution<Complex32>, Error>
 where
     F: FnMut(&[Complex32], &mut [Complex32]),
 {
@@ -382,7 +396,9 @@ where
         }
     }
 
-    if info != 0 {
+    // See `smallest_eigenpair_c64` for the rationale on the `info == 1`
+    // partial-convergence pass-through.
+    if !(0..=1).contains(&info) {
         return Err(Error::AupdFailed(info));
     }
 
@@ -432,7 +448,13 @@ where
     let value = d[0];
     let mut vector = vec![zero; n];
     vector.copy_from_slice(&v[..n]);
-    Ok((value, vector))
+    Ok(EigSolution {
+        eigenvalue: value,
+        eigenvector: vector,
+        iters: usize_from_iparam(iparam[2]),
+        nconv: usize_from_iparam(iparam[4]),
+        n_matvec: usize_from_iparam(iparam[8]),
+    })
 }
 
 fn c_int_from_usize(value: usize) -> Result<c_int, Error> {
