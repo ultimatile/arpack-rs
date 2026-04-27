@@ -5,20 +5,19 @@ use std::os::raw::c_int;
 /// The eigenpair returned by a driver, plus the diagnostic counters
 /// ARPACK writes back into `iparam` during the iteration.
 ///
-/// Even when ARPACK reports the iteration as successful (`info == 0`
-/// or `info == 1` from `*aupd_c`), the caller may want to:
+/// Returned only when ARPACK reaches full convergence (`info == 0`
+/// from `*aupd_c`); the `max_iter`-reached case is reported through
+/// [`crate::Error::MaxIterReached`] instead, which preserves the
+/// same iparam counters but signals that no usable Ritz pair was
+/// extracted. Callers thus see this struct only when the eigenpair
+/// is meaningful.
 ///
-/// - tell fast convergence apart from a `max_iter` cap (`iters`);
-/// - detect partial convergence (`nconv < nev` — for the
-///   single-eigenpair drivers exposed today this means
-///   `nconv == 0`, i.e. the returned pair is the best Ritz
-///   approximation seen but did not satisfy `tol`);
+/// The fields beyond `eigenvalue` / `eigenvector` let callers:
+///
+/// - tell fast convergence apart from a near-cap run (`iters`);
+/// - confirm full convergence at a glance (`nconv >= nev`);
 /// - account the cost of operator applications (`n_matvec`),
 ///   which is the dominant cost in DMRG-style workloads.
-///
-/// Exposing these as fields means callers do not have to thread
-/// custom counters through their matvec closures or guess at
-/// "did it really converge or just hit max_iter."
 #[derive(Debug, Clone)]
 pub struct EigSolution<T> {
     /// Smallest (algebraic / real-part) eigenvalue.
@@ -31,10 +30,10 @@ pub struct EigSolution<T> {
     /// equal to it when the iteration was capped.
     pub iters: usize,
     /// Number of converged Ritz values (`iparam[4]`). For the
-    /// single-eigenpair drivers exposed today this is `0` or `1`:
-    /// `0` means partial convergence (the eigenpair is the best
-    /// Ritz approximation in the final Krylov subspace but did
-    /// not meet `tol`), `1` means full convergence.
+    /// single-eigenpair drivers exposed today this is always `1`
+    /// when this struct is returned (`info == 0` from `*aupd_c`);
+    /// the `max_iter`-reached case where `nconv` would be `0` is
+    /// reported via [`crate::Error::MaxIterReached`] instead.
     pub nconv: usize,
     /// Total number of operator applications performed by ARPACK
     /// during the iteration (`iparam[8]`). This is the only cost
