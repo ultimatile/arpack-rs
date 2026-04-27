@@ -8,3 +8,7 @@ description = "Safe Rust wrapper around ARPACK-NG"
 
 [dependencies]
 arpack-sys = { path = "../arpack-sys", version = "0.0.1" }
+num-complex = "0.4"
+
+[dev-dependencies]
+num-complex = "0.4"
