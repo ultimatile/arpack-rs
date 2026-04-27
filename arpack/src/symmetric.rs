@@ -53,9 +53,13 @@ impl Default for Options {
 /// Returns an [`EigSolution`] with the eigenpair and the diagnostic
 /// counters ARPACK wrote back into `iparam` (actual iterations, number
 /// converged, matvec applications). The eigenvector is normalized per
-/// ARPACK's convention (unit 2-norm). Partial convergence (max_iter
-/// reached) is returned as `Ok` with `nconv < nev`; see [`Error`] for
-/// the cases that surface as `Err`.
+/// ARPACK's convention (unit 2-norm).
+///
+/// If ARPACK hits `Options::max_iter` before the requested Ritz pair
+/// converges, the call returns [`Error::MaxIterReached`] (carrying
+/// the same iparam diagnostics) rather than `Ok` — for the
+/// single-eigenpair drivers exposed today there is no usable partial
+/// pair to extract. See [`Error`] for the other failure modes.
 ///
 /// # Allocation
 ///
