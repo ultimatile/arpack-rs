@@ -19,7 +19,7 @@ fn diagonal_real_spectrum_returns_smallest() {
     let diag = [c(-2.0, 0.0), c(0.0, 0.0), c(1.0, 0.0), c(4.0, 0.0), c(7.0, 0.0)];
     let n = diag.len();
 
-    let (lambda, vector) = smallest_eigenpair_c64(
+    let solution = smallest_eigenpair_c64(
         n,
         |x, y| {
             for i in 0..n {
@@ -34,6 +34,8 @@ fn diagonal_real_spectrum_returns_smallest() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
+    let vector = &solution.eigenvector;
     assert!(
         (lambda.re + 2.0).abs() < 1e-10 && lambda.im.abs() < 1e-10,
         "lambda = {lambda} (expected -2 + 0i)"
@@ -48,6 +50,20 @@ fn diagonal_real_spectrum_returns_smallest() {
         (norm_sq - 1.0).abs() < 1e-10,
         "vector should be unit-normalized; norm^2 = {norm_sq}"
     );
+
+    // Diagnostic counters: the trivial spectrum should fully converge,
+    // ARPACK should report a positive iteration and matvec count.
+    assert_eq!(solution.nconv, 1, "expected full convergence (nconv = 1)");
+    assert!(
+        solution.iters >= 1 && solution.iters <= 200,
+        "iters out of range: {}",
+        solution.iters
+    );
+    assert!(
+        solution.n_matvec >= 1,
+        "matvec count should be positive: {}",
+        solution.n_matvec
+    );
 }
 
 #[test]
@@ -59,7 +75,7 @@ fn complex_hermitian_diagonal_returns_smallest_real() {
     let n = 4;
     let diag = [c(1.0, 0.0), c(2.0, 0.0), c(3.0, 0.0), c(4.0, 0.0)];
 
-    let (lambda, _vector) = smallest_eigenpair_c64(
+    let solution = smallest_eigenpair_c64(
         n,
         |x, y| {
             for i in 0..n {
@@ -70,6 +86,7 @@ fn complex_hermitian_diagonal_returns_smallest_real() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
     assert!(
         (lambda.re - 1.0).abs() < 1e-10 && lambda.im.abs() < 1e-10,
         "lambda = {lambda} (expected 1 + 0i)"
@@ -85,7 +102,7 @@ fn hermitian_tridiagonal_matches_analytical_smallest() {
     let n = 32usize;
     let lambda_min_expected = 2.0 - 2.0 * (std::f64::consts::PI / (n as f64 + 1.0)).cos();
 
-    let (lambda, _vector) = smallest_eigenpair_c64(
+    let solution = smallest_eigenpair_c64(
         n,
         |x, y| {
             for i in 0..n {
@@ -103,6 +120,7 @@ fn hermitian_tridiagonal_matches_analytical_smallest() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
     assert!(
         lambda.im.abs() < 1e-9,
         "expected real eigenvalue, got imag = {}",
@@ -132,7 +150,7 @@ fn hermitian_with_imaginary_off_diagonals() {
     let lambda_min_expected = 2.0 - 2.0 * (std::f64::consts::PI / (n as f64 + 1.0)).cos();
     let im = c(0.0, 1.0);
 
-    let (lambda, vector) = smallest_eigenpair_c64(
+    let solution = smallest_eigenpair_c64(
         n,
         |x, y| {
             for i in 0..n {
@@ -150,6 +168,8 @@ fn hermitian_with_imaginary_off_diagonals() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
+    let vector = &solution.eigenvector;
     assert!(
         lambda.im.abs() < 1e-9,
         "Hermitian eigenvalue should be real; got imag = {}",

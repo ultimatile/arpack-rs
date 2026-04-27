@@ -15,7 +15,7 @@ fn diagonal_real_spectrum_returns_smallest() {
     let diag = [c(-2.0, 0.0), c(0.0, 0.0), c(1.0, 0.0), c(4.0, 0.0), c(7.0, 0.0)];
     let n = diag.len();
 
-    let (lambda, vector) = smallest_eigenpair_c32(
+    let solution = smallest_eigenpair_c32(
         n,
         |x, y| {
             for i in 0..n {
@@ -30,6 +30,8 @@ fn diagonal_real_spectrum_returns_smallest() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
+    let vector = &solution.eigenvector;
     assert!(
         (lambda.re + 2.0).abs() < 1e-5 && lambda.im.abs() < 1e-5,
         "lambda = {lambda} (expected -2 + 0i)"
@@ -53,7 +55,7 @@ fn hermitian_tridiagonal_matches_analytical_smallest() {
     let n = 32usize;
     let lambda_min_expected = 2.0_f32 - 2.0 * (std::f32::consts::PI / (n as f32 + 1.0)).cos();
 
-    let (lambda, _vector) = smallest_eigenpair_c32(
+    let solution = smallest_eigenpair_c32(
         n,
         |x, y| {
             for i in 0..n {
@@ -71,6 +73,7 @@ fn hermitian_tridiagonal_matches_analytical_smallest() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
     assert!(
         lambda.im.abs() < 1e-5,
         "expected real eigenvalue, got imag = {}",
@@ -91,7 +94,7 @@ fn hermitian_with_imaginary_off_diagonals() {
     let lambda_min_expected = 2.0_f32 - 2.0 * (std::f32::consts::PI / (n as f32 + 1.0)).cos();
     let im = c(0.0, 1.0);
 
-    let (lambda, vector) = smallest_eigenpair_c32(
+    let solution = smallest_eigenpair_c32(
         n,
         |x, y| {
             for i in 0..n {
@@ -109,6 +112,8 @@ fn hermitian_with_imaginary_off_diagonals() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
+    let vector = &solution.eigenvector;
     assert!(
         lambda.im.abs() < 1e-5,
         "Hermitian eigenvalue should be real; got imag = {}",

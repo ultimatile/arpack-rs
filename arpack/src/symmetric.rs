@@ -16,6 +16,7 @@ use arpack_sys::{dsaupd_c, dseupd_c, ssaupd_c, sseupd_c};
 
 use crate::error::Error;
 use crate::lock::lock;
+use crate::solution::{usize_from_iparam, EigSolution};
 
 /// Tunable parameters for the Lanczos driver.
 #[derive(Clone, Debug)]
@@ -49,8 +50,12 @@ impl Default for Options {
 /// The operator is provided as a matrix-vector closure: `matvec(x, y)`
 /// must compute `y <- A x` where both slices have length `n`.
 ///
-/// Returns `(eigenvalue, eigenvector)`. The eigenvector is normalized
-/// per ARPACK's convention (unit 2-norm).
+/// Returns an [`EigSolution`] with the eigenpair and the diagnostic
+/// counters ARPACK wrote back into `iparam` (actual iterations, number
+/// converged, matvec applications). The eigenvector is normalized per
+/// ARPACK's convention (unit 2-norm). Partial convergence (max_iter
+/// reached) is returned as `Ok` with `nconv < nev`; see [`Error`] for
+/// the cases that surface as `Err`.
 ///
 /// # Allocation
 ///
@@ -63,7 +68,7 @@ pub fn smallest_eigenpair_f64<F>(
     n: usize,
     matvec: F,
     options: &Options,
-) -> Result<(f64, Vec<f64>), Error>
+) -> Result<EigSolution<f64>, Error>
 where
     F: FnMut(&[f64], &mut [f64]),
 {
@@ -187,7 +192,13 @@ where
         }
     }
 
-    if info != 0 {
+    // ARPACK convention: info < 0 is misuse / numerical failure; info > 0
+    // are non-fatal early-exit conditions. Only `info == 1` (max_iter
+    // reached, partial convergence) is surfaced as a successful return —
+    // the partial state is reported through `nconv` and `iters` in the
+    // returned `EigSolution`. All other non-zero codes are unrecoverable
+    // for the caller (e.g. info = 3 needs a different `ncv`).
+    if !(0..=1).contains(&info) {
         return Err(Error::AupdFailed(info));
     }
 
@@ -236,7 +247,13 @@ where
     let value = d[0];
     let mut vector = vec![0.0f64; n];
     vector.copy_from_slice(&v[..n]);
-    Ok((value, vector))
+    Ok(EigSolution {
+        eigenvalue: value,
+        eigenvector: vector,
+        iters: usize_from_iparam(iparam[2]),
+        nconv: usize_from_iparam(iparam[4]),
+        n_matvec: usize_from_iparam(iparam[8]),
+    })
 }
 
 /// Smallest algebraic eigenpair of a real symmetric operator, f32
@@ -255,7 +272,7 @@ pub fn smallest_eigenpair_f32<F>(
     n: usize,
     matvec: F,
     options: &Options,
-) -> Result<(f32, Vec<f32>), Error>
+) -> Result<EigSolution<f32>, Error>
 where
     F: FnMut(&[f32], &mut [f32]),
 {
@@ -354,7 +371,9 @@ where
         }
     }
 
-    if info != 0 {
+    // See `smallest_eigenpair_f64` for the rationale on the `info == 1`
+    // partial-convergence pass-through.
+    if !(0..=1).contains(&info) {
         return Err(Error::AupdFailed(info));
     }
 
@@ -400,7 +419,13 @@ where
     let value = d[0];
     let mut vector = vec![0.0f32; n];
     vector.copy_from_slice(&v[..n]);
-    Ok((value, vector))
+    Ok(EigSolution {
+        eigenvalue: value,
+        eigenvector: vector,
+        iters: usize_from_iparam(iparam[2]),
+        nconv: usize_from_iparam(iparam[4]),
+        n_matvec: usize_from_iparam(iparam[8]),
+    })
 }
 
 fn c_int_from_usize(value: usize, name: &'static str) -> Result<c_int, Error> {

@@ -10,7 +10,7 @@ fn diagonal_matrix_returns_smallest() {
     let diag = [-3.0_f32, -1.0, 0.0, 2.0, 5.0];
     let n = diag.len();
 
-    let (lambda, vector) = smallest_eigenpair_f32(
+    let solution = smallest_eigenpair_f32(
         n,
         |x, y| {
             for i in 0..n {
@@ -25,6 +25,8 @@ fn diagonal_matrix_returns_smallest() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
+    let vector = &solution.eigenvector;
     assert!(
         (lambda + 3.0).abs() < 1e-5,
         "lambda = {lambda} (expected -3)"
@@ -48,7 +50,7 @@ fn tridiagonal_matrix_matches_analytical_smallest() {
     let n = 32usize;
     let lambda_min_expected = 2.0_f32 - 2.0 * (std::f32::consts::PI / (n as f32 + 1.0)).cos();
 
-    let (lambda, _vector) = smallest_eigenpair_f32(
+    let solution = smallest_eigenpair_f32(
         n,
         |x, y| {
             for i in 0..n {
@@ -66,6 +68,7 @@ fn tridiagonal_matrix_matches_analytical_smallest() {
     )
     .expect("driver should converge");
 
+    let lambda = solution.eigenvalue;
     let rel_err = (lambda - lambda_min_expected).abs() / lambda_min_expected.abs();
     assert!(
         rel_err < 1e-4,
@@ -93,7 +96,7 @@ fn boundary_n_equals_nev_plus_two_uses_default_ncv() {
     // n = nev + 2 = 3; default heuristic must produce ncv = 2 = nev + 1.
     let n = 3;
     let diag = [1.0_f32, 4.0, 9.0]; // smallest = 1.0
-    let (lambda, _vector) = smallest_eigenpair_f32(
+    let solution = smallest_eigenpair_f32(
         n,
         |x, y| {
             for i in 0..n {
@@ -107,6 +110,7 @@ fn boundary_n_equals_nev_plus_two_uses_default_ncv() {
         },
     )
     .expect("driver should converge at the smallest legal n");
+    let lambda = solution.eigenvalue;
     assert!(
         (lambda - 1.0).abs() < 1e-5,
         "lambda = {lambda} (expected 1.0)"
