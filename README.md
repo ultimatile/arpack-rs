@@ -13,6 +13,10 @@ This workspace publishes two crates:
 
 Early scaffolding. `arpack-sys` exposes the full eigenvalue-driver surface; the safe wrapper in `arpack` is in progress.
 
+## Supported targets
+
+Only **64-bit-pointer-width** targets are supported. 32-bit targets fail to compile via `compile_error!` because the wrapper does not bound workspace-size arithmetic against the smaller `usize` / `isize::MAX` envelope, and 32-bit ARPACK use cases are out of scope. Open an issue if you need 32-bit support.
+
 ## Linking model
 
 `arpack-sys` links to a system-installed ARPACK-NG (>= 3.8.0) located via `pkg-config`. There is no vendored Fortran build — install ARPACK-NG through your platform package manager:
