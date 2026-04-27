@@ -6,26 +6,16 @@
 //! supplied through a matrix-vector closure. Additional `Which` modes
 //! and multi-eigenvalue extraction can be layered on later.
 //!
-//! Thread-safety: ARPACK keeps Fortran-side state (random number
-//! generator seed and SAVE variables in the Lanczos drivers).
-//! Concurrent calls into the library from multiple threads corrupt
-//! that state and are upstream-unsafe. The wrapper guards every
-//! `*aupd_c` + `*eupd_c` sequence with a process-wide mutex so the
-//! safe API stays sound even when tests run in parallel; callers
-//! requiring concurrent ARPACK invocations must run them in
-//! separate processes instead.
+//! Thread-safety: every entry point acquires the crate-wide
+//! [`crate::lock`] guard so the entire `*aupd_c` + `*eupd_c`
+//! sequence runs atomically against ARPACK's Fortran SAVE state.
 
 use std::os::raw::c_int;
-use std::sync::Mutex;
 
 use arpack_sys::{dsaupd_c, dseupd_c};
 
 use crate::error::Error;
-
-/// Process-wide lock for any ARPACK call. ARPACK keeps Fortran SAVE
-/// state internally, so the entire `*aupd_c` reverse-communication
-/// loop plus the trailing `*eupd_c` extraction must be atomic.
-static ARPACK_LOCK: Mutex<()> = Mutex::new(());
+use crate::lock::lock;
 
 /// Tunable parameters for the Lanczos driver.
 #[derive(Clone, Debug)]
@@ -146,15 +136,7 @@ where
     let bmat = c"I".as_ptr();
     let which = c"SA".as_ptr();
 
-    // ARPACK Fortran state is process-global; serialize the entire
-    // reverse-communication + extraction sequence.
-    let _guard = ARPACK_LOCK.lock().unwrap_or_else(|poisoned| {
-        // Recover from poisoning: a previous call may have panicked
-        // mid-iteration, but ARPACK has no recoverable state we can
-        // observe from outside, so we just take the guard back. Future
-        // callers will pay the cost of a fresh ARPACK init via info=0.
-        poisoned.into_inner()
-    });
+    let _guard = lock();
 
     let mut ido: c_int = 0;
     let mut info: c_int = 0;

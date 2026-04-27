@@ -6,8 +6,9 @@
 
 pub use arpack_sys as sys;
 
+pub mod arnoldi;
 pub mod error;
+mod lock;
 pub mod symmetric;
 
 pub use error::Error;
-pub use symmetric::{Options, smallest_eigenpair_f64};
