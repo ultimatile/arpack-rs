@@ -9,6 +9,20 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    // Reject non-64-bit-pointer-width targets up front so the user
+    // sees the supported-targets message before pkg-config / linker
+    // diagnostics. The mirrored `compile_error!` in lib.rs catches
+    // configurations where this build script is skipped (e.g. docs
+    // builds).
+    let pointer_width = std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH")
+        .expect("CARGO_CFG_TARGET_POINTER_WIDTH must be set by cargo");
+    if pointer_width != "64" {
+        panic!(
+            "arpack-sys is supported only on 64-bit-pointer-width targets \
+             (got target_pointer_width = {pointer_width})"
+        );
+    }
+
     let lib = pkg_config::Config::new()
         .atleast_version("3.8.0")
         .probe("arpack")

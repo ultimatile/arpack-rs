@@ -11,4 +11,11 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
+// 32-bit-pointer-width targets are out of scope: workspace-size
+// arithmetic in the safe wrapper is bounded only by `usize` /
+// `isize::MAX`, and ARPACK use cases on 32-bit are not part of the
+// supported envelope. Open an issue if 32-bit support is needed.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("arpack-sys is supported only on 64-bit-pointer-width targets");
+
 include!("bindings.rs");
