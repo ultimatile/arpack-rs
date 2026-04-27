@@ -187,3 +187,24 @@ fn explicit_ncv_equal_to_n_is_rejected() {
     );
     assert!(matches!(result, Err(Error::InvalidParam(_))));
 }
+
+#[test]
+fn explicit_ncv_equals_nev_plus_one_is_rejected() {
+    // Complex Arnoldi requires `ncv - nev >= 2` (zneupd info=-3
+    // otherwise). For nev = 1, that means `ncv == 2` is illegal even
+    // though it satisfies the looser symmetric-driver constraint
+    // `ncv > nev`. The wrapper must reject `ncv = nev + 1` up front
+    // so callers do not see a late EupdFailed(-3) after running the
+    // full reverse-communication loop.
+    let n = 8;
+    let result = smallest_eigenpair_c64(
+        n,
+        |_x, _y| unreachable!("matvec should not run when params are rejected"),
+        &Options {
+            tol: 0.0,
+            max_iter: 100,
+            ncv: Some(2), // = nev + 1 with nev hardcoded to 1
+        },
+    );
+    assert!(matches!(result, Err(Error::InvalidParam(_))));
+}
