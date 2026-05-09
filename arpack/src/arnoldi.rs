@@ -12,9 +12,9 @@
 //! comes back as `Complex<f64>` and callers verify / discard the
 //! imaginary part themselves.
 //!
-//! Thread-safety: every entry point acquires the crate-wide
-//! [`crate::lock`] guard so the entire `*aupd_c` + `*eupd_c`
-//! sequence runs atomically against ARPACK's Fortran SAVE state.
+//! Thread-safety: every entry point acquires a process-wide mutex
+//! so the entire `*aupd_c` + `*eupd_c` sequence runs atomically
+//! against ARPACK's Fortran SAVE state.
 
 use std::os::raw::c_int;
 
