@@ -12,9 +12,9 @@
 //! comes back as `Complex<f64>` and callers verify / discard the
 //! imaginary part themselves.
 //!
-//! Thread-safety: every entry point acquires the crate-wide
-//! [`crate::lock`] guard so the entire `*aupd_c` + `*eupd_c`
-//! sequence runs atomically against ARPACK's Fortran SAVE state.
+//! Thread-safety: every entry point acquires a process-wide mutex
+//! so the entire `*aupd_c` + `*eupd_c` sequence runs atomically
+//! against ARPACK's Fortran SAVE state.
 
 use std::os::raw::c_int;
 
@@ -168,7 +168,7 @@ where
         // SAFETY: Every pointer aliases a Vec whose length matches
         // (or exceeds) what ARPACK reads/writes; the `Complex64` ↔
         // `__BindgenComplex<f64>` cast is sound because both are
-        // `#[repr(C)] { re: f64, im: f64 }`. The crate-wide lock
+        // `#[repr(C)] { re: f64, im: f64 }`. The process-wide lock
         // serializes ARPACK's Fortran SAVE state.
         unsafe {
             znaupd_c(

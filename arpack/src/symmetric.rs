@@ -6,9 +6,9 @@
 //! supplied through a matrix-vector closure. Additional `Which` modes
 //! and multi-eigenvalue extraction can be layered on later.
 //!
-//! Thread-safety: every entry point acquires the crate-wide
-//! [`crate::lock`] guard so the entire `*aupd_c` + `*eupd_c`
-//! sequence runs atomically against ARPACK's Fortran SAVE state.
+//! Thread-safety: every entry point acquires a process-wide mutex
+//! so the entire `*aupd_c` + `*eupd_c` sequence runs atomically
+//! against ARPACK's Fortran SAVE state.
 
 use std::os::raw::c_int;
 
