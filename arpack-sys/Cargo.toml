@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
 description = "FFI bindings to ARPACK-NG (system-linked via pkg-config)"
+documentation = "https://docs.rs/arpack-sys"
+keywords = ["eigenvalue", "eigensolver", "arpack", "lanczos", "arnoldi"]
+categories = ["external-ffi-bindings", "mathematics", "science"]
 links = "arpack"
 build = "build.rs"
 
