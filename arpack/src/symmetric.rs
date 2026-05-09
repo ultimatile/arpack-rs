@@ -1,10 +1,10 @@
-//! Real-symmetric eigenvalue drivers backed by ARPACK-NG `dsaupd_c` /
-//! `dseupd_c` (Implicitly Restarted Lanczos).
+//! Real-symmetric eigenvalue drivers backed by the ARPACK-NG
+//! `{s,d}{sa,se}upd_c` family (Implicitly Restarted Lanczos).
 //!
-//! The current surface is intentionally narrow: a single function that
-//! returns the smallest algebraic eigenpair of a symmetric operator
-//! supplied through a matrix-vector closure. Additional `Which` modes
-//! and multi-eigenvalue extraction can be layered on later.
+//! The current surface is intentionally narrow: a smallest algebraic
+//! eigenpair function for each of `f64` and `f32` operators, supplied
+//! through a matrix-vector closure. Additional `Which` modes and
+//! multi-eigenvalue extraction can be layered on later.
 //!
 //! Thread-safety: every entry point acquires a process-wide mutex
 //! so the entire `*aupd_c` + `*eupd_c` sequence runs atomically
