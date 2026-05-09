@@ -1,16 +1,15 @@
 //! Arnoldi-iteration eigenvalue drivers (`*naupd_c` / `*neupd_c`).
 //!
 //! ARPACK-NG ships two Arnoldi families: real-non-symmetric
-//! (`{s,d}{na,ne}upd_c`) and complex (`{c,z}{na,ne}upd_c`). For now
-//! we expose only the `Complex<f64>` driver because that covers
-//! arnet's primary oracle use case (Hermitian operators in DMRG /
-//! quantum-system simulations). `Complex<f32>` will mirror this
-//! module with the smaller scalar.
+//! (`{s,d}{na,ne}upd_c`) and complex (`{c,z}{na,ne}upd_c`). This
+//! module wraps the complex family for both `Complex<f64>` and
+//! `Complex<f32>` scalars; the real-non-symmetric family is not
+//! wrapped yet.
 //!
 //! Hermitian operators have real eigenvalues but are still driven
 //! through the complex Arnoldi routine; the returned eigenvalue
-//! comes back as `Complex<f64>` and callers verify / discard the
-//! imaginary part themselves.
+//! comes back complex and callers verify / discard the imaginary
+//! part themselves.
 //!
 //! Thread-safety: every entry point acquires a process-wide mutex
 //! so the entire `*aupd_c` + `*eupd_c` sequence runs atomically

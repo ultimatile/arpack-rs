@@ -16,8 +16,7 @@ use std::os::raw::c_int;
 ///
 /// - tell fast convergence apart from a near-cap run (`iters`);
 /// - confirm full convergence at a glance (`nconv >= nev`);
-/// - account the cost of operator applications (`n_matvec`),
-///   which is the dominant cost in DMRG-style workloads.
+/// - account the cost of operator applications (`n_matvec`).
 #[derive(Debug, Clone)]
 pub struct EigSolution<T> {
     /// Smallest (algebraic / real-part) eigenvalue.
