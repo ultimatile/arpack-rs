@@ -168,7 +168,7 @@ where
         // SAFETY: Every pointer aliases a Vec whose length matches
         // (or exceeds) what ARPACK reads/writes; the `Complex64` ↔
         // `__BindgenComplex<f64>` cast is sound because both are
-        // `#[repr(C)] { re: f64, im: f64 }`. The crate-wide lock
+        // `#[repr(C)] { re: f64, im: f64 }`. The process-wide lock
         // serializes ARPACK's Fortran SAVE state.
         unsafe {
             znaupd_c(
