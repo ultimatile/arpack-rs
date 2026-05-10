@@ -12,7 +12,7 @@ keywords = ["eigenvalue", "eigensolver", "arpack", "lanczos", "arnoldi"]
 categories = ["mathematics", "science", "algorithms"]
 
 [dependencies]
-arpack-sys = { path = "../arpack-sys", version = "0.0.1" }
+arpack-sys = { path = "../arpack-sys", version = "0.0.2" }
 num-complex = "0.4"
 
 [dev-dependencies]
