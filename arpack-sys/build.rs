@@ -23,6 +23,16 @@ fn main() {
         );
     }
 
+    // docs.rs builds documentation in a sandbox that does not have
+    // ARPACK-NG installed and never links the resulting artifact, so
+    // the pkg-config probe and the ABI check it feeds would only abort
+    // the build for no benefit. Bindings are pre-generated and
+    // committed, so skipping here still lets rustdoc render the public
+    // surface.
+    if std::env::var_os("DOCS_RS").is_some() {
+        return;
+    }
+
     let lib = pkg_config::Config::new()
         .atleast_version("3.8.0")
         .probe("arpack")
