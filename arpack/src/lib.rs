@@ -31,11 +31,11 @@
 //! # Current limitations
 //!
 //! Each driver exposes only the smallest eigenpair (`nev = 1`)
-//! with a fixed `which` selector per family — `"SA"` for the
-//! real-symmetric Lanczos driver, `"SR"` for the complex Arnoldi
-//! driver. Multi-eigenvalue extraction (`nev > 1`) and a
-//! configurable `Which` selector are tracked at
-//! <https://github.com/ultimatile/arpack-rs/issues/1>.
+//! with a fixed `which` selector — `"SA"` (smallest algebraic)
+//! for the real-symmetric Lanczos driver, `"SR"` (smallest real
+//! part) for the complex Arnoldi driver. Multi-eigenvalue
+//! extraction (`nev > 1`) and a configurable `which` selector
+//! are tracked at <https://github.com/ultimatile/arpack-rs/issues/1>.
 
 pub mod arnoldi;
 pub mod error;
