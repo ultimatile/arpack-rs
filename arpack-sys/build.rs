@@ -125,7 +125,10 @@ fn strip_macro_decoration(raw: &str) -> &str {
         s = s[..pos].trim();
     }
     while let (Some(stripped_start), true) = (s.strip_prefix('('), s.ends_with(')')) {
-        s = stripped_start.strip_suffix(')').unwrap_or(stripped_start).trim();
+        s = stripped_start
+            .strip_suffix(')')
+            .unwrap_or(stripped_start)
+            .trim();
     }
     s
 }

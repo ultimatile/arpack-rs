@@ -12,7 +12,13 @@ fn c(re: f32, im: f32) -> Complex32 {
 
 #[test]
 fn diagonal_real_spectrum_returns_smallest() {
-    let diag = [c(-2.0, 0.0), c(0.0, 0.0), c(1.0, 0.0), c(4.0, 0.0), c(7.0, 0.0)];
+    let diag = [
+        c(-2.0, 0.0),
+        c(0.0, 0.0),
+        c(1.0, 0.0),
+        c(4.0, 0.0),
+        c(7.0, 0.0),
+    ];
     let n = diag.len();
 
     let solution = smallest_eigenpair_c32(
@@ -60,8 +66,16 @@ fn hermitian_tridiagonal_matches_analytical_smallest() {
         |x, y| {
             for i in 0..n {
                 let center = c(2.0, 0.0) * x[i];
-                let left = if i > 0 { c(-1.0, 0.0) * x[i - 1] } else { c(0.0, 0.0) };
-                let right = if i + 1 < n { c(-1.0, 0.0) * x[i + 1] } else { c(0.0, 0.0) };
+                let left = if i > 0 {
+                    c(-1.0, 0.0) * x[i - 1]
+                } else {
+                    c(0.0, 0.0)
+                };
+                let right = if i + 1 < n {
+                    c(-1.0, 0.0) * x[i + 1]
+                } else {
+                    c(0.0, 0.0)
+                };
                 y[i] = center + left + right;
             }
         },
@@ -99,7 +113,11 @@ fn hermitian_with_imaginary_off_diagonals() {
         |x, y| {
             for i in 0..n {
                 let center = c(2.0, 0.0) * x[i];
-                let upper = if i + 1 < n { im * x[i + 1] } else { c(0.0, 0.0) };
+                let upper = if i + 1 < n {
+                    im * x[i + 1]
+                } else {
+                    c(0.0, 0.0)
+                };
                 let lower = if i > 0 { -im * x[i - 1] } else { c(0.0, 0.0) };
                 y[i] = center + upper + lower;
             }

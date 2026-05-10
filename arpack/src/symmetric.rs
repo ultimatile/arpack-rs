@@ -16,7 +16,7 @@ use arpack_sys::{dsaupd_c, dseupd_c, ssaupd_c, sseupd_c};
 
 use crate::error::Error;
 use crate::lock::lock;
-use crate::solution::{usize_from_iparam, EigSolution};
+use crate::solution::{EigSolution, usize_from_iparam};
 
 /// Tunable parameters for the Lanczos driver.
 #[derive(Clone, Debug)]
@@ -91,9 +91,9 @@ where
     // below `n` and floored at `nev + 1`. The previous floor of
     // `nev + 2` was too conservative — for `n = nev + 2` it lifted
     // `ncv` back up to `n`, defeating the ceiling.
-    let ncv = options.ncv.unwrap_or_else(|| {
-        (2 * nev_usize + 4).min(n - 1).max(nev_usize + 1)
-    });
+    let ncv = options
+        .ncv
+        .unwrap_or_else(|| (2 * nev_usize + 4).min(n - 1).max(nev_usize + 1));
 
     let n_i32 = c_int_from_usize(n, "n")?;
     let ncv_i32 = c_int_from_usize(ncv, "ncv")?;
@@ -111,18 +111,16 @@ where
     // though the individual values pass the `c_int` range check, so
     // verify each one explicitly before requesting allocations that
     // ARPACK will then index using the un-overflowed `n` / `ncv`.
-    let v_len = n.checked_mul(ncv).ok_or(Error::InvalidParam(
-        "n * ncv overflows usize",
-    ))?;
-    let workd_len = n.checked_mul(3).ok_or(Error::InvalidParam(
-        "3 * n overflows usize",
-    ))?;
+    let v_len = n
+        .checked_mul(ncv)
+        .ok_or(Error::InvalidParam("n * ncv overflows usize"))?;
+    let workd_len = n
+        .checked_mul(3)
+        .ok_or(Error::InvalidParam("3 * n overflows usize"))?;
     let lworkl = ncv
         .checked_add(8)
         .and_then(|s| ncv.checked_mul(s))
-        .ok_or(Error::InvalidParam(
-            "ncv * (ncv + 8) overflows usize",
-        ))?;
+        .ok_or(Error::InvalidParam("ncv * (ncv + 8) overflows usize"))?;
 
     // Convert every length we need to pass into ARPACK to `c_int`
     // *before* requesting allocations. This keeps the failure mode
@@ -455,4 +453,3 @@ fn c_int_from_usize(value: usize, name: &'static str) -> Result<c_int, Error> {
         Error::InvalidParam("value does not fit in c_int")
     })
 }
-

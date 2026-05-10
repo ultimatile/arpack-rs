@@ -2,8 +2,8 @@
 //! looser than the f64 suite — single precision can converge no
 //! tighter than its relative epsilon (~1.2e-7).
 
-use arpack::symmetric::{Options, smallest_eigenpair_f32};
 use arpack::Error;
+use arpack::symmetric::{Options, smallest_eigenpair_f32};
 
 #[test]
 fn diagonal_matrix_returns_smallest() {

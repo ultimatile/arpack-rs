@@ -22,7 +22,7 @@ use num_complex::{Complex32, Complex64};
 
 use crate::error::Error;
 use crate::lock::lock;
-use crate::solution::{usize_from_iparam, EigSolution};
+use crate::solution::{EigSolution, usize_from_iparam};
 
 /// Tunable parameters for the complex Arnoldi driver. The fields
 /// have the same meaning as in [`crate::symmetric::Options`]; the
@@ -417,7 +417,10 @@ where
     let howmny = c"A".as_ptr();
     let mut select = vec![0i32; ncv];
     let mut d = vec![zero; nev_usize];
-    let sigma = __BindgenComplex { re: 0.0_f32, im: 0.0_f32 };
+    let sigma = __BindgenComplex {
+        re: 0.0_f32,
+        im: 0.0_f32,
+    };
     let mut workev = vec![zero; workev_len];
     let mut info_eup: c_int = 0;
 
