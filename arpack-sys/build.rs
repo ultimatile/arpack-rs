@@ -23,6 +23,22 @@ fn main() {
         );
     }
 
+    // Track DOCS_RS regardless of which branch this run takes, so a
+    // target directory shared between docs.rs-style (`DOCS_RS=1`,
+    // skip-link) and normal (probe + link) builds invalidates the
+    // cached build-script output when the env var flips.
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+
+    // docs.rs builds documentation in a sandbox that does not have
+    // ARPACK-NG installed and never links the resulting artifact, so
+    // the pkg-config probe and the ABI check it feeds would only abort
+    // the build for no benefit. Bindings are pre-generated and
+    // committed, so skipping here still lets rustdoc render the public
+    // surface.
+    if std::env::var_os("DOCS_RS").is_some() {
+        return;
+    }
+
     let lib = pkg_config::Config::new()
         .atleast_version("3.8.0")
         .probe("arpack")
