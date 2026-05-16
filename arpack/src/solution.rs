@@ -77,13 +77,15 @@ pub struct EigSolution<T> {
 /// the returned vectors themselves.
 #[derive(Debug, Clone)]
 pub struct MultiEigSolution<T> {
-    /// Converged Ritz values, length `nconv`. See the type-level
-    /// docstring for the per-family ordering convention.
+    /// Converged Ritz values, length `min(nconv, nev_requested)`.
+    /// See the type-level docstring for the per-family ordering
+    /// convention and for why the count may be `< nconv` when ARPACK
+    /// reports extra converged values.
     pub eigenvalues: Vec<T>,
-    /// Converged eigenvectors, length `nconv`. Each inner `Vec`
-    /// has length `n` and is unit-normalized per ARPACK's
-    /// convention. `eigenvectors[k]` corresponds to
-    /// `eigenvalues[k]`.
+    /// Converged eigenvectors, same length as `eigenvalues` (i.e.
+    /// `min(nconv, nev_requested)`). Each inner `Vec` has length `n`
+    /// and is unit-normalized per ARPACK's convention.
+    /// `eigenvectors[k]` corresponds to `eigenvalues[k]`.
     pub eigenvectors: Vec<Vec<T>>,
     /// Number of eigenpairs the caller asked for. Carried for
     /// diagnostics — compare against `nconv` to detect partial
