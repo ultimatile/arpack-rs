@@ -60,7 +60,14 @@ fn eigenpairs_smallest_real_part_three_laplacian() {
     )
     .expect("driver should converge");
 
-    assert_eq!(solution.nconv, nev);
+    assert!(
+        solution.nconv >= nev,
+        "expected full convergence (nconv >= nev); nconv = {}, nev = {}",
+        solution.nconv,
+        nev
+    );
+    assert_eq!(solution.eigenvalues.len(), nev);
+    assert_eq!(solution.eigenvectors.len(), nev);
     let sorted = sorted_by_re(&solution.eigenvalues);
     for (k, (&got, &exp)) in sorted.iter().zip(expected.iter()).enumerate() {
         assert!(
@@ -113,7 +120,14 @@ fn eigenpairs_largest_real_part_three_laplacian() {
     )
     .expect("driver should converge");
 
-    assert_eq!(solution.nconv, nev);
+    assert!(
+        solution.nconv >= nev,
+        "expected full convergence (nconv >= nev); nconv = {}, nev = {}",
+        solution.nconv,
+        nev
+    );
+    assert_eq!(solution.eigenvalues.len(), nev);
+    assert_eq!(solution.eigenvectors.len(), nev);
     let sorted = sorted_by_re(&solution.eigenvalues);
     for (k, (&got, &exp)) in sorted.iter().zip(expected.iter()).enumerate() {
         let rel_err = (got.re - exp).abs() / exp.abs();
@@ -161,7 +175,14 @@ fn eigenpairs_smallest_magnitude_complex_diag() {
     )
     .expect("driver should converge");
 
-    assert_eq!(solution.nconv, nev);
+    assert!(
+        solution.nconv >= nev,
+        "expected full convergence (nconv >= nev); nconv = {}, nev = {}",
+        solution.nconv,
+        nev
+    );
+    assert_eq!(solution.eigenvalues.len(), nev);
+    assert_eq!(solution.eigenvectors.len(), nev);
     let sorted = sorted_by_re(&solution.eigenvalues);
     let expected_re = [-3.0_f64, 1.0, 2.0];
     for (k, (&got, &exp)) in sorted.iter().zip(expected_re.iter()).enumerate() {
@@ -210,7 +231,14 @@ fn eigenpairs_hermitian_imaginary_off_diagonals_nev3() {
     )
     .expect("driver should converge");
 
-    assert_eq!(solution.nconv, nev);
+    assert!(
+        solution.nconv >= nev,
+        "expected full convergence (nconv >= nev); nconv = {}, nev = {}",
+        solution.nconv,
+        nev
+    );
+    assert_eq!(solution.eigenvalues.len(), nev);
+    assert_eq!(solution.eigenvectors.len(), nev);
     let sorted = sorted_by_re(&solution.eigenvalues);
     for (k, (&got, &exp)) in sorted.iter().zip(expected.iter()).enumerate() {
         assert!(

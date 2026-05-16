@@ -53,7 +53,14 @@ fn eigenpairs_smallest_real_part_three_laplacian() {
     )
     .expect("driver should converge");
 
-    assert_eq!(solution.nconv, nev);
+    assert!(
+        solution.nconv >= nev,
+        "expected full convergence (nconv >= nev); nconv = {}, nev = {}",
+        solution.nconv,
+        nev
+    );
+    assert_eq!(solution.eigenvalues.len(), nev);
+    assert_eq!(solution.eigenvectors.len(), nev);
     let sorted = sorted_by_re(&solution.eigenvalues);
     for (k, (&got, &exp)) in sorted.iter().zip(expected.iter()).enumerate() {
         assert!(

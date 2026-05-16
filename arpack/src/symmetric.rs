@@ -60,12 +60,18 @@ impl Default for Options {
 /// [`Which::SmallestMagnitude`], [`Which::LargestMagnitude`]
 /// (per-family restriction enforced by the wrapper).
 ///
-/// Returns a [`MultiEigSolution<f64>`] holding `nconv` converged
-/// eigenpairs (with `nconv <= nev`) plus iparam diagnostics. The
-/// real-symmetric drivers always return eigenvalues in **ascending
-/// algebraic order**, regardless of `Which` — `LargestAlgebraic`
-/// with `nev = 3` returns the three largest eigenvalues sorted
-/// smallest-of-the-three first.
+/// Returns a [`MultiEigSolution<f64>`] holding up to `nev`
+/// converged eigenpairs plus iparam diagnostics. The
+/// `eigenvalues` / `eigenvectors` arrays both have length
+/// `min(nconv, nev)`; the raw ARPACK count is preserved in
+/// `nconv` for diagnostics (it occasionally exceeds `nev` when
+/// extra Ritz values converge to tolerance, but the extra
+/// values are not surfaced because the extraction buffer is
+/// `nev`-sized).
+/// The real-symmetric drivers always return eigenvalues in
+/// **ascending algebraic order**, regardless of `Which` —
+/// `LargestAlgebraic` with `nev = 3` returns the three largest
+/// eigenvalues sorted smallest-of-the-three first.
 ///
 /// On `Options::max_iter` exhaustion with `nconv == 0`, returns
 /// [`Error::MaxIterReached`]; on exhaustion with `0 < nconv < nev`,

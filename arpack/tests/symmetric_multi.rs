@@ -140,7 +140,14 @@ fn eigenpairs_largest_three_laplacian_returns_ascending() {
     )
     .expect("driver should converge");
 
-    assert_eq!(solution.nconv, nev);
+    assert!(
+        solution.nconv >= nev,
+        "expected full convergence (nconv >= nev); nconv = {}, nev = {}",
+        solution.nconv,
+        nev
+    );
+    assert_eq!(solution.eigenvalues.len(), nev);
+    assert_eq!(solution.eigenvectors.len(), nev);
     assert_sorted_ascending(&solution.eigenvalues);
     for (k, (&got, &exp)) in solution.eigenvalues.iter().zip(expected.iter()).enumerate() {
         let rel_err = (got - exp).abs() / exp.abs();
@@ -180,7 +187,14 @@ fn eigenpairs_smallest_magnitude_diag_returns_by_magnitude() {
     )
     .expect("driver should converge");
 
-    assert_eq!(solution.nconv, nev);
+    assert!(
+        solution.nconv >= nev,
+        "expected full convergence (nconv >= nev); nconv = {}, nev = {}",
+        solution.nconv,
+        nev
+    );
+    assert_eq!(solution.eigenvalues.len(), nev);
+    assert_eq!(solution.eigenvectors.len(), nev);
     let expected = [-3.0, 1.0, 2.0];
     for (k, (&got, &exp)) in solution.eigenvalues.iter().zip(expected.iter()).enumerate() {
         assert!(

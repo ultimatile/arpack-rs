@@ -73,9 +73,14 @@ impl Default for Options {
 /// [`Which::LargestMagnitude`] (per-family restriction enforced
 /// by the wrapper).
 ///
-/// Returns a [`MultiEigSolution<Complex64>`] holding `nconv`
-/// converged eigenpairs (with `nconv <= nev`) plus iparam
-/// diagnostics.
+/// Returns a [`MultiEigSolution<Complex64>`] holding up to `nev`
+/// converged eigenpairs plus iparam diagnostics. The
+/// `eigenvalues` / `eigenvectors` arrays both have length
+/// `min(nconv, nev)`; the raw ARPACK count is preserved in
+/// `nconv` for diagnostics (it occasionally exceeds `nev` when
+/// extra Ritz values converge to tolerance, but the extra
+/// values are not surfaced because the extraction buffer is
+/// `nev`-sized).
 ///
 /// # Ordering
 ///
