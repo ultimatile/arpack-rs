@@ -254,6 +254,22 @@ fn eigenpairs_rejects_symmetric_only_which_for_complex() {
 }
 
 #[test]
+fn eigenpairs_huge_nev_is_rejected_without_overflow() {
+    // See the symmetric mirror for context: `nev = usize::MAX`
+    // must surface as `InvalidParam`, not as a panic on `nev + 3`
+    // / `2 * nev + 4` arithmetic.
+    let n = 8;
+    let result = eigenpairs_c64(
+        n,
+        usize::MAX,
+        Which::SmallestRealPart,
+        |_x, _y| unreachable!("matvec should not run when nev overflows c_int"),
+        &Options::default(),
+    );
+    assert!(matches!(result, Err(Error::InvalidParam(_))));
+}
+
+#[test]
 fn eigenpairs_nev_zero_is_rejected() {
     let n = 8;
     let result = eigenpairs_c64(

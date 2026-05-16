@@ -207,6 +207,23 @@ fn eigenpairs_rejects_complex_only_which_for_symmetric() {
 }
 
 #[test]
+fn eigenpairs_huge_nev_is_rejected_without_overflow() {
+    // `nev` is caller-controlled. The implementation must bound
+    // it before doing `nev + 2` / `2 * nev + 4` arithmetic that
+    // would otherwise panic in debug builds for values near
+    // `usize::MAX`. Result must be `InvalidParam`, not a panic.
+    let n = 8;
+    let result = eigenpairs_f64(
+        n,
+        usize::MAX,
+        Which::SmallestAlgebraic,
+        |_x, _y| unreachable!("matvec should not run when nev overflows c_int"),
+        &Options::default(),
+    );
+    assert!(matches!(result, Err(Error::InvalidParam(_))));
+}
+
+#[test]
 fn eigenpairs_nev_zero_is_rejected() {
     let n = 8;
     let result = eigenpairs_f64(

@@ -191,6 +191,14 @@ where
             "Which selector not accepted by the real-symmetric driver",
         ));
     }
+    // Bound `nev` (caller-controlled) to the `c_int` range before
+    // using it in `usize` arithmetic (`nev + 2`, `2 * nev + 4`,
+    // `nev + 1`). On 64-bit targets — the only ones supported here
+    // per the workspace's `compile_error!` — the bounded value
+    // cannot overflow `usize` in those expressions; without this
+    // upfront check, `nev = usize::MAX` panics in debug builds at
+    // `nev + 2` before the existing `c_int_from_usize` calls fire.
+    let nev_i32 = c_int_from_usize(nev)?;
     // IRLM enforces a strict `ncv < n` ceiling so it always has at
     // least one free Krylov dimension to restart against; the
     // smallest legal `ncv` is `nev + 1`, hence the precondition
@@ -205,7 +213,6 @@ where
         .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 1));
 
     let n_i32 = c_int_from_usize(n)?;
-    let nev_i32 = c_int_from_usize(nev)?;
     let ncv_i32 = c_int_from_usize(ncv)?;
     let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 
@@ -393,6 +400,8 @@ where
             "Which selector not accepted by the real-symmetric driver",
         ));
     }
+    // See `eigenpairs_f64_impl` for why `nev` is bounded here.
+    let nev_i32 = c_int_from_usize(nev)?;
     if n < nev + 2 {
         return Err(Error::InvalidParam(
             "n too small for ARPACK (require n >= nev + 2)",
@@ -403,7 +412,6 @@ where
         .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 1));
 
     let n_i32 = c_int_from_usize(n)?;
-    let nev_i32 = c_int_from_usize(nev)?;
     let ncv_i32 = c_int_from_usize(ncv)?;
     let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 

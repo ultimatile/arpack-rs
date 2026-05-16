@@ -201,6 +201,13 @@ where
             "Which selector not accepted by the complex Arnoldi driver",
         ));
     }
+    // Bound `nev` (caller-controlled) to the `c_int` range before
+    // using it in `usize` arithmetic (`nev + 3`, `2 * nev + 4`,
+    // `nev + 2`, `nev_i32 + 2`). On 64-bit targets — the only ones
+    // supported per the workspace's `compile_error!` — the bounded
+    // value cannot overflow in those expressions; without this
+    // upfront check, `nev = usize::MAX` panics in debug builds.
+    let nev_i32 = c_int_from_usize(nev)?;
     // Complex Arnoldi has a tighter constraint than real symmetric:
     // `zneupd` rejects `ncv - nev < 2` with `info = -3`, so the
     // smallest legal `ncv` is `nev + 2` and the precondition on
@@ -215,7 +222,6 @@ where
         .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 2));
 
     let n_i32 = c_int_from_usize(n)?;
-    let nev_i32 = c_int_from_usize(nev)?;
     let ncv_i32 = c_int_from_usize(ncv)?;
     let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 
@@ -416,6 +422,8 @@ where
             "Which selector not accepted by the complex Arnoldi driver",
         ));
     }
+    // See `eigenpairs_c64_impl` for why `nev` is bounded here.
+    let nev_i32 = c_int_from_usize(nev)?;
     if n < nev + 3 {
         return Err(Error::InvalidParam(
             "n too small for complex Arnoldi (require n >= nev + 3)",
@@ -426,7 +434,6 @@ where
         .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 2));
 
     let n_i32 = c_int_from_usize(n)?;
-    let nev_i32 = c_int_from_usize(nev)?;
     let ncv_i32 = c_int_from_usize(ncv)?;
     let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 
