@@ -50,12 +50,18 @@ pub struct EigSolution<T> {
 /// so the single-eigenpair API can stay ergonomic while the
 /// multi-eigenpair API exposes per-vector storage.
 ///
-/// `eigenvalues` and `eigenvectors` both have length `nconv` —
-/// **not** `nev_requested`. ARPACK only guarantees the first
-/// `nconv` slots of its output are converged; slots beyond
-/// `nconv` are undefined and never propagated through the
-/// wrapper. Callers verify `nconv >= nev_requested` themselves
-/// if they need full convergence.
+/// `eigenvalues` and `eigenvectors` both have length
+/// `min(nconv, nev_requested)`. ARPACK only guarantees the
+/// first `nconv` slots of its output are converged; slots
+/// beyond that count are undefined and never propagated. The
+/// extra `min` against `nev_requested` accommodates the rare
+/// case where ARPACK reports `nconv > nev_requested` (bonus
+/// Ritz values that satisfied the convergence bound) — the
+/// extraction buffer is only `nev_requested` long per the
+/// documented `*eupd` interface, so any bonus values are
+/// recorded in `nconv` as a diagnostic but not in the
+/// eigenpair arrays. Callers verify `nconv >= nev_requested`
+/// themselves if they need full convergence.
 ///
 /// # Ordering
 ///
@@ -84,9 +90,13 @@ pub struct MultiEigSolution<T> {
     /// convergence.
     pub nev_requested: usize,
     /// Number of converged Ritz values (`iparam[4]` writeback).
-    /// Satisfies `0 < nconv <= nev_requested`; the
+    /// Always at least `1` when this struct is returned (the
     /// `nconv == 0` case is reported as
-    /// [`crate::Error::MaxIterReached`] instead.
+    /// [`crate::Error::MaxIterReached`] instead). Usually
+    /// `nconv <= nev_requested`, but ARPACK occasionally reports
+    /// a slightly larger count when extra Ritz values converged
+    /// to tolerance — only `min(nconv, nev_requested)` of those
+    /// are surfaced in `eigenvalues` / `eigenvectors`.
     pub nconv: usize,
     /// Number of restart iterations actually performed
     /// (ARPACK's `iparam[2]` writeback).

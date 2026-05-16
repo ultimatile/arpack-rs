@@ -388,9 +388,16 @@ where
         return Err(Error::EupdFailed(info_eup));
     }
 
-    let eigenvalues = d[..nconv].to_vec();
-    let mut eigenvectors = Vec::with_capacity(nconv);
-    for k in 0..nconv {
+    // Cap the surfaced count at `nev`: ARPACK may report
+    // `nconv > nev` ("bonus" Ritz values satisfying the convergence
+    // bound), but `d` is sized to `nev` per the documented `*eupd`
+    // interface, so slots beyond `nev` are not safely indexable.
+    // Preserve the raw `iparam[4]` count in `nconv` as a diagnostic;
+    // truncate the eigenvalue / eigenvector arrays to `nev`.
+    let extracted = nconv.min(nev);
+    let eigenvalues = d[..extracted].to_vec();
+    let mut eigenvectors = Vec::with_capacity(extracted);
+    for k in 0..extracted {
         eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
     }
 
@@ -591,9 +598,12 @@ where
         return Err(Error::EupdFailed(info_eup));
     }
 
-    let eigenvalues = d[..nconv].to_vec();
-    let mut eigenvectors = Vec::with_capacity(nconv);
-    for k in 0..nconv {
+    // See `eigenpairs_c64_impl` for why extraction is capped at
+    // `nev`.
+    let extracted = nconv.min(nev);
+    let eigenvalues = d[..extracted].to_vec();
+    let mut eigenvectors = Vec::with_capacity(extracted);
+    for k in 0..extracted {
         eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
     }
 
