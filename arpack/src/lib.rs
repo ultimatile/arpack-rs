@@ -4,6 +4,16 @@
 //! (real-symmetric Lanczos and complex Arnoldi). Callers that need
 //! to drive ARPACK manually should depend on `arpack-sys` directly.
 //!
+//! Each driver family exposes two layers:
+//!
+//! - `eigenpairs_*` — general entry point that accepts `nev >= 1`
+//!   and a [`Which`] selector. Returns a [`MultiEigSolution`].
+//! - `smallest_eigenpair_*` — convenience wrapper fixed to
+//!   `nev = 1` and the family's "smallest" mode
+//!   ([`Which::SmallestAlgebraic`] for the real-symmetric driver,
+//!   [`Which::SmallestRealPart`] for the complex Arnoldi driver).
+//!   Returns a singular [`EigSolution`].
+//!
 //! # Example
 //!
 //! Smallest eigenvalue of `diag(1, 2, 3)`:
@@ -27,27 +37,22 @@
 //!
 //! assert!((solution.eigenvalue - 1.0).abs() < 1e-9);
 //! ```
-//!
-//! # Current limitations
-//!
-//! Each driver exposes only the smallest eigenpair (`nev = 1`)
-//! with a fixed `which` selector — `"SA"` (smallest algebraic)
-//! for the real-symmetric Lanczos driver, `"SR"` (smallest real
-//! part) for the complex Arnoldi driver. Multi-eigenvalue
-//! extraction (`nev > 1`) and a configurable `which` selector
-//! are tracked at <https://github.com/ultimatile/arpack-rs/issues/1>.
 
 pub mod arnoldi;
 pub mod error;
 mod lock;
 mod solution;
 pub mod symmetric;
+mod which;
 
 pub use error::Error;
-pub use solution::EigSolution;
+pub use solution::{EigSolution, MultiEigSolution};
+pub use which::Which;
 // Crate-root re-exports for the symmetric driver were the public API
 // before the `arnoldi` module landed; preserve them so existing
 // callers do not need to update their imports. The Arnoldi module's
 // own `Options` lives at `arpack::arnoldi::Options` to avoid
 // colliding with the symmetric one re-exported here.
-pub use symmetric::{Options, smallest_eigenpair_f32, smallest_eigenpair_f64};
+pub use symmetric::{
+    Options, eigenpairs_f32, eigenpairs_f64, smallest_eigenpair_f32, smallest_eigenpair_f64,
+};

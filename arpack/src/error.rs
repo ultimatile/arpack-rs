@@ -10,11 +10,21 @@ use std::fmt;
 /// could be applied — try increasing `ncv`).
 ///
 /// `info = 1` from `*aupd_c` (max_iter reached before all `nev` Ritz
-/// pairs converged) is mapped to [`Error::MaxIterReached`], which
-/// preserves the iparam diagnostic counters so the caller can decide
-/// whether to retry with a larger budget. For the single-eigenpair
-/// drivers (`nev = 1`) currently exposed, `info = 1` always means
-/// `nconv = 0` and no usable Ritz pair was extracted.
+/// pairs converged) splits two ways depending on the converged count
+/// reported in `iparam[4]`:
+///
+/// - `nconv == 0`: no usable Ritz pair. Mapped to
+///   [`Error::MaxIterReached`] with the diagnostic counters
+///   preserved so the caller can retry with a larger budget. The
+///   wrapper does **not** call `*eupd_c` in this case (symmetric
+///   `*seupd` would quick-return with d/z untouched; complex
+///   `*neupd` would return `info = -14`).
+/// - `0 < nconv < nev`: partial extraction. Mapped to
+///   `Ok(MultiEigSolution { nconv, .. })` carrying the `nconv`
+///   converged pairs ARPACK was able to produce. This branch is
+///   only reachable from the multi-eigenpair drivers
+///   (`eigenpairs_*`); the `nev = 1` wrappers cannot observe it
+///   because there is no integer strictly between 0 and 1.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -30,17 +40,20 @@ pub enum Error {
     /// (currently `ido = 2`, which only occurs for generalized
     /// eigenproblems with `bmat = 'G'`).
     UnexpectedIdo(i32),
-    /// `*aupd_c` returned `info = 1`: the iteration hit `max_iter`
-    /// before the requested `nev` Ritz pairs converged. The iparam
-    /// writeback counters are preserved so the caller can retry with
-    /// a larger `max_iter` or report partial progress.
+    /// `*aupd_c` returned `info = 1` AND `iparam[4] == 0`: the
+    /// iteration hit `max_iter` with zero converged Ritz pairs, so
+    /// no eigenpair could be extracted. The iparam writeback
+    /// counters are preserved so the caller can retry with a larger
+    /// `max_iter`. The partial-extraction case (`0 < nconv < nev`)
+    /// is reported through `Ok(MultiEigSolution { nconv, .. })`
+    /// instead and never via this variant.
     MaxIterReached {
         /// `iparam[2]` writeback — restart iterations performed
         /// (equals `Options::max_iter` when the cap was hit).
         iters: usize,
         /// `iparam[4]` writeback — converged Ritz value count.
-        /// For the single-eigenpair drivers this is always `0`
-        /// when this variant is returned.
+        /// Always `0` when this variant is returned (positive
+        /// nconv routes through `Ok` instead).
         nconv: usize,
         /// `iparam[8]` writeback — operator applications performed.
         n_matvec: usize,
