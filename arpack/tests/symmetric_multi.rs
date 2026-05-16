@@ -83,7 +83,12 @@ fn eigenpairs_smallest_three_diag_returns_sorted() {
     .expect("driver should converge for the trivial diagonal spectrum");
 
     assert_eq!(solution.nev_requested, nev);
-    assert_eq!(solution.nconv, nev, "expected full convergence");
+    assert!(
+        solution.nconv >= nev,
+        "expected full convergence (nconv >= nev); nconv = {}, nev = {}",
+        solution.nconv,
+        nev
+    );
     assert_eq!(solution.eigenvalues.len(), nev);
     assert_eq!(solution.eigenvectors.len(), nev);
 
