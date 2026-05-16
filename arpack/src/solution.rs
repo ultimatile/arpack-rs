@@ -41,6 +41,60 @@ pub struct EigSolution<T> {
     pub n_matvec: usize,
 }
 
+/// Multi-eigenpair result returned by the `eigenpairs_*` drivers.
+///
+/// Carries the converged eigenpairs plus the same diagnostic
+/// counters as [`EigSolution`]. The crate distinguishes
+/// `EigSolution` (singular, returned by `smallest_eigenpair_*`)
+/// from `MultiEigSolution` (plural, returned by `eigenpairs_*`)
+/// so the single-eigenpair API can stay ergonomic while the
+/// multi-eigenpair API exposes per-vector storage.
+///
+/// `eigenvalues` and `eigenvectors` both have length `nconv` —
+/// **not** `nev_requested`. ARPACK only guarantees the first
+/// `nconv` slots of its output are converged; slots beyond
+/// `nconv` are undefined and never propagated through the
+/// wrapper. Callers verify `nconv >= nev_requested` themselves
+/// if they need full convergence.
+///
+/// # Ordering
+///
+/// The real-symmetric Lanczos drivers (`{s,d}{sa,se}upd_c`)
+/// return eigenvalues in ascending algebraic order regardless of
+/// the `Which` selector — `Which::LargestAlgebraic` with `nev = 3`
+/// on a Laplacian-style matrix yields the three largest
+/// eigenvalues sorted ascending (smallest of the three first).
+///
+/// The complex Arnoldi drivers (`{c,z}{na,ne}upd_c`) do **not**
+/// apply a final sort; the order depends on ARPACK's internal
+/// selection state. Callers that need a stable order must sort
+/// the returned vectors themselves.
+#[derive(Debug, Clone)]
+pub struct MultiEigSolution<T> {
+    /// Converged Ritz values, length `nconv`. See the type-level
+    /// docstring for the per-family ordering convention.
+    pub eigenvalues: Vec<T>,
+    /// Converged eigenvectors, length `nconv`. Each inner `Vec`
+    /// has length `n` and is unit-normalized per ARPACK's
+    /// convention. `eigenvectors[k]` corresponds to
+    /// `eigenvalues[k]`.
+    pub eigenvectors: Vec<Vec<T>>,
+    /// Number of eigenpairs the caller asked for. Carried for
+    /// diagnostics — compare against `nconv` to detect partial
+    /// convergence.
+    pub nev_requested: usize,
+    /// Number of converged Ritz values (`iparam[4]` writeback).
+    /// Satisfies `0 < nconv <= nev_requested`; the
+    /// `nconv == 0` case is reported as
+    /// [`crate::Error::MaxIterReached`] instead.
+    pub nconv: usize,
+    /// Number of restart iterations actually performed
+    /// (ARPACK's `iparam[2]` writeback).
+    pub iters: usize,
+    /// Total number of operator applications (`iparam[8]`).
+    pub n_matvec: usize,
+}
+
 /// Convert a non-negative `iparam` writeback (the only kind ARPACK
 /// produces for these slots) into `usize`. Values are inherently
 /// non-negative — `iters`, `nconv`, and matvec counts cannot be

@@ -11,6 +11,14 @@
 //! comes back complex and callers verify / discard the imaginary
 //! part themselves.
 //!
+//! The crate exposes two layers per scalar type:
+//!
+//! - [`eigenpairs_c64`] / [`eigenpairs_c32`] — general entry point
+//!   accepting `nev >= 1` and a [`Which`] selector.
+//! - [`smallest_eigenpair_c64`] / [`smallest_eigenpair_c32`] —
+//!   convenience wrappers fixed to `nev = 1` and
+//!   [`Which::SmallestRealPart`].
+//!
 //! Thread-safety: every entry point acquires a process-wide mutex
 //! so the entire `*aupd_c` + `*eupd_c` sequence runs atomically
 //! against ARPACK's Fortran SAVE state.
@@ -22,7 +30,8 @@ use num_complex::{Complex32, Complex64};
 
 use crate::error::Error;
 use crate::lock::lock;
-use crate::solution::{EigSolution, usize_from_iparam};
+use crate::solution::{EigSolution, MultiEigSolution, usize_from_iparam};
+use crate::which::Which;
 
 /// Tunable parameters for the complex Arnoldi driver. The fields
 /// have the same meaning as in [`crate::symmetric::Options`]; the
@@ -54,19 +63,81 @@ impl Default for Options {
     }
 }
 
-/// Smallest-real-part eigenpair of a complex linear operator. For
-/// Hermitian operators the eigenvalue's imaginary part is
-/// numerically zero and the real part is the smallest eigenvalue.
+/// Compute up to `nev` eigenpairs of a complex linear operator.
 ///
 /// `matvec(x, y)` must compute `y <- A x` where both slices have
-/// length `n`.
+/// length `n`. The [`Which`] selector controls which Ritz values
+/// to retain — must be one of [`Which::SmallestRealPart`],
+/// [`Which::LargestRealPart`], [`Which::SmallestImagPart`],
+/// [`Which::LargestImagPart`], [`Which::SmallestMagnitude`],
+/// [`Which::LargestMagnitude`] (per-family restriction enforced
+/// by the wrapper).
+///
+/// Returns a [`MultiEigSolution<Complex64>`] holding `nconv`
+/// converged eigenpairs (with `nconv <= nev`) plus iparam
+/// diagnostics.
+///
+/// # Ordering
+///
+/// Unlike the real-symmetric drivers, the complex Arnoldi
+/// extraction routine (`zneupd`) does **not** sort its output —
+/// the order in `eigenvalues` depends on ARPACK's internal
+/// selection state and is not contracted by this wrapper.
+/// Callers that need a stable order must sort the returned
+/// vectors themselves (e.g. by `eigenvalues[k].re`).
+///
+/// # Partial convergence
+///
+/// On `Options::max_iter` exhaustion with `nconv == 0`, returns
+/// [`Error::MaxIterReached`]; on exhaustion with
+/// `0 < nconv < nev`, returns `Ok(MultiEigSolution { nconv, .. })`
+/// carrying the partial set (ARPACK's `zneupd` guards `-14` on
+/// `nconv .le. 0`, so extraction succeeds for any `nconv >= 1`).
 ///
 /// # Allocation
 ///
-/// Workspace size scales as `O(n * ncv + ncv^2)`. Inputs whose byte
-/// size exceeds `isize::MAX` cause `Vec` allocations to panic
-/// rather than return [`Error::InvalidParam`] — same convention as
-/// the standard library and the `symmetric` module.
+/// Workspace size scales as `O(n * ncv + ncv^2)`. Inputs whose
+/// byte size exceeds `isize::MAX` cause `Vec` allocations to
+/// panic rather than return [`Error::InvalidParam`] — same
+/// convention as the standard library and the `symmetric` module.
+pub fn eigenpairs_c64<F>(
+    n: usize,
+    nev: usize,
+    which: Which,
+    matvec: F,
+    options: &Options,
+) -> Result<MultiEigSolution<Complex64>, Error>
+where
+    F: FnMut(&[Complex64], &mut [Complex64]),
+{
+    eigenpairs_c64_impl(n, nev, which, matvec, options)
+}
+
+/// Compute up to `nev` eigenpairs of a complex linear operator,
+/// f32 precision. See [`eigenpairs_c64`] for the long-form
+/// contract.
+pub fn eigenpairs_c32<F>(
+    n: usize,
+    nev: usize,
+    which: Which,
+    matvec: F,
+    options: &Options,
+) -> Result<MultiEigSolution<Complex32>, Error>
+where
+    F: FnMut(&[Complex32], &mut [Complex32]),
+{
+    eigenpairs_c32_impl(n, nev, which, matvec, options)
+}
+
+/// Smallest-real-part eigenpair of a complex linear operator.
+///
+/// Thin wrapper around [`eigenpairs_c64`] with `nev = 1` and
+/// [`Which::SmallestRealPart`]. For Hermitian operators the
+/// returned eigenvalue's imaginary part is numerically zero and
+/// the real part is the smallest eigenvalue.
+///
+/// On `Options::max_iter` exhaustion, returns
+/// [`Error::MaxIterReached`].
 pub fn smallest_eigenpair_c64<F>(
     n: usize,
     matvec: F,
@@ -75,38 +146,86 @@ pub fn smallest_eigenpair_c64<F>(
 where
     F: FnMut(&[Complex64], &mut [Complex64]),
 {
-    let nev: c_int = 1;
-    let nev_usize = nev as usize;
+    let multi = eigenpairs_c64(n, 1, Which::SmallestRealPart, matvec, options)?;
+    Ok(singular_from_multi(multi))
+}
+
+/// Smallest-real-part eigenpair of a complex linear operator,
+/// f32 precision. See [`smallest_eigenpair_c64`] for the
+/// long-form contract.
+pub fn smallest_eigenpair_c32<F>(
+    n: usize,
+    matvec: F,
+    options: &Options,
+) -> Result<EigSolution<Complex32>, Error>
+where
+    F: FnMut(&[Complex32], &mut [Complex32]),
+{
+    let multi = eigenpairs_c32(n, 1, Which::SmallestRealPart, matvec, options)?;
+    Ok(singular_from_multi(multi))
+}
+
+fn singular_from_multi<T>(multi: MultiEigSolution<T>) -> EigSolution<T> {
+    let mut eigenvalues = multi.eigenvalues;
+    let mut eigenvectors = multi.eigenvectors;
+    let eigenvalue = eigenvalues
+        .pop()
+        .expect("eigenpairs_* with nev=1 returns at least one Ritz value on Ok");
+    let eigenvector = eigenvectors
+        .pop()
+        .expect("eigenpairs_* with nev=1 returns at least one eigenvector on Ok");
+    EigSolution {
+        eigenvalue,
+        eigenvector,
+        iters: multi.iters,
+        nconv: multi.nconv,
+        n_matvec: multi.n_matvec,
+    }
+}
+
+fn eigenpairs_c64_impl<F>(
+    n: usize,
+    nev: usize,
+    which: Which,
+    mut matvec: F,
+    options: &Options,
+) -> Result<MultiEigSolution<Complex64>, Error>
+where
+    F: FnMut(&[Complex64], &mut [Complex64]),
+{
+    if nev == 0 {
+        return Err(Error::InvalidParam("nev must be positive"));
+    }
+    if !which.accepted_by_complex_arnoldi() {
+        return Err(Error::InvalidParam(
+            "Which selector not accepted by the complex Arnoldi driver",
+        ));
+    }
     // Complex Arnoldi has a tighter constraint than real symmetric:
     // `zneupd` rejects `ncv - nev < 2` with `info = -3`, so the
     // smallest legal `ncv` is `nev + 2` and the precondition on
-    // `n` is `n >= nev + 3` (so `ncv = nev + 2 < n` still holds).
-    if n < nev_usize + 3 {
+    // `n` is `n >= nev + 3`.
+    if n < nev + 3 {
         return Err(Error::InvalidParam(
             "n too small for complex Arnoldi (require n >= nev + 3)",
         ));
     }
     let ncv = options
         .ncv
-        .unwrap_or_else(|| (2 * nev_usize + 4).min(n - 1).max(nev_usize + 2));
+        .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 2));
 
     let n_i32 = c_int_from_usize(n)?;
+    let nev_i32 = c_int_from_usize(nev)?;
     let ncv_i32 = c_int_from_usize(ncv)?;
     let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 
-    // Strict `ncv >= nev + 2` and `ncv < n`.
-    if !(nev > 0 && ncv_i32 >= nev + 2 && ncv_i32 < n_i32) {
-        return Err(Error::InvalidParam(
-            "require 0 < nev, nev + 2 <= ncv, and ncv < n",
-        ));
+    if !(ncv_i32 >= nev_i32 + 2 && ncv_i32 < n_i32) {
+        return Err(Error::InvalidParam("require nev + 2 <= ncv and ncv < n"));
     }
     if max_iter_i32 <= 0 {
         return Err(Error::InvalidParam("max_iter must be positive"));
     }
 
-    // Workspace sizes. znaupd's `lworkl` requirement is
-    // `3*ncv^2 + 5*ncv` (different from dsaupd's `ncv*(ncv+8)`),
-    // and the eupd routine needs an extra `workev[2*ncv]`.
     let v_len = n
         .checked_mul(ncv)
         .ok_or(Error::InvalidParam("n * ncv overflows usize"))?;
@@ -131,10 +250,6 @@ where
 
     let lworkl_i32 = c_int_from_usize(lworkl)?;
 
-    // All buffers are owned in `Complex64` form for ergonomic
-    // access; the FFI calls cast pointers to `__BindgenComplex<f64>`
-    // since the two types are layout-compatible (`#[repr(C)]` with
-    // identical fields).
     let zero = Complex64::new(0.0, 0.0);
     let mut resid = vec![zero; n];
     let mut v = vec![zero; v_len];
@@ -152,15 +267,12 @@ where
     let mut rwork = vec![0.0f64; ncv];
 
     let bmat = c"I".as_ptr();
-    let which = c"SR".as_ptr();
+    let which_ptr = which.as_c_str().as_ptr();
 
     let _guard = lock();
 
     let mut ido: c_int = 0;
     let mut info: c_int = 0;
-    let mut matvec = matvec;
-    // Reusable input buffer; ARPACK can hand us X and Y windows
-    // pointing into the same sub-range of `workd`.
     let mut x_buf = vec![zero; n];
 
     loop {
@@ -174,8 +286,8 @@ where
                 &mut ido,
                 bmat,
                 n_i32,
-                which,
-                nev,
+                which_ptr,
+                nev_i32,
                 options.tol,
                 resid.as_mut_ptr() as *mut __BindgenComplex<f64>,
                 ncv_i32,
@@ -204,26 +316,33 @@ where
         }
     }
 
-    // info = 1: max_iter reached. With nev = 1 hardcoded, this always
-    // means nconv = 0, and calling `*neupd` on that state returns
-    // info = -14 ("did not find any eigenvalues to sufficient
-    // accuracy") rather than a usable Ritz pair. Surface as
-    // MaxIterReached with the iparam diagnostics intact.
-    if info == 1 {
+    // info handling (uniform with the symmetric driver per the
+    // research finding that zneupd guards `-14` on `nconv .le. 0`,
+    // not on `nconv < nev`):
+    // - info = 0           : full convergence, extract nev pairs.
+    // - info = 1, nconv=0  : MaxIterReached (skip *eupd; zneupd
+    //                        would return info = -14).
+    // - info = 1, nconv>=1 : call *eupd, extract `nconv` pairs.
+    // - other              : AupdFailed.
+    let nconv = usize_from_iparam(iparam[4]);
+    let iters = usize_from_iparam(iparam[2]);
+    let n_matvec = usize_from_iparam(iparam[8]);
+
+    if info == 1 && nconv == 0 {
         return Err(Error::MaxIterReached {
-            iters: usize_from_iparam(iparam[2]),
-            nconv: usize_from_iparam(iparam[4]),
-            n_matvec: usize_from_iparam(iparam[8]),
+            iters,
+            nconv,
+            n_matvec,
         });
     }
-    if info != 0 {
+    if info != 0 && info != 1 {
         return Err(Error::AupdFailed(info));
     }
 
     let rvec: c_int = 1;
     let howmny = c"A".as_ptr();
     let mut select = vec![0i32; ncv];
-    let mut d = vec![zero; nev_usize];
+    let mut d = vec![zero; nev];
     let sigma = __BindgenComplex { re: 0.0, im: 0.0 };
     let mut workev = vec![zero; workev_len];
     let mut info_eup: c_int = 0;
@@ -242,8 +361,8 @@ where
             workev.as_mut_ptr() as *mut __BindgenComplex<f64>,
             bmat,
             n_i32,
-            which,
-            nev,
+            which_ptr,
+            nev_i32,
             options.tol,
             resid.as_mut_ptr() as *mut __BindgenComplex<f64>,
             ncv_i32,
@@ -263,51 +382,56 @@ where
         return Err(Error::EupdFailed(info_eup));
     }
 
-    let value = d[0];
-    let mut vector = vec![zero; n];
-    vector.copy_from_slice(&v[..n]);
-    Ok(EigSolution {
-        eigenvalue: value,
-        eigenvector: vector,
-        iters: usize_from_iparam(iparam[2]),
-        nconv: usize_from_iparam(iparam[4]),
-        n_matvec: usize_from_iparam(iparam[8]),
+    let eigenvalues = d[..nconv].to_vec();
+    let mut eigenvectors = Vec::with_capacity(nconv);
+    for k in 0..nconv {
+        eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
+    }
+
+    Ok(MultiEigSolution {
+        eigenvalues,
+        eigenvectors,
+        nev_requested: nev,
+        nconv,
+        iters,
+        n_matvec,
     })
 }
 
-/// Smallest-real-part eigenpair of a complex linear operator, f32
-/// precision. See [`smallest_eigenpair_c64`] for the long-form
-/// contract; this entry point is identical except for the working
-/// precision, and accepts the tolerance as `f64` to keep
-/// [`Options`] uniform across precisions (the value is cast to
-/// `f32` at the FFI boundary).
-pub fn smallest_eigenpair_c32<F>(
+fn eigenpairs_c32_impl<F>(
     n: usize,
-    matvec: F,
+    nev: usize,
+    which: Which,
+    mut matvec: F,
     options: &Options,
-) -> Result<EigSolution<Complex32>, Error>
+) -> Result<MultiEigSolution<Complex32>, Error>
 where
     F: FnMut(&[Complex32], &mut [Complex32]),
 {
-    let nev: c_int = 1;
-    let nev_usize = nev as usize;
-    if n < nev_usize + 3 {
+    if nev == 0 {
+        return Err(Error::InvalidParam("nev must be positive"));
+    }
+    if !which.accepted_by_complex_arnoldi() {
+        return Err(Error::InvalidParam(
+            "Which selector not accepted by the complex Arnoldi driver",
+        ));
+    }
+    if n < nev + 3 {
         return Err(Error::InvalidParam(
             "n too small for complex Arnoldi (require n >= nev + 3)",
         ));
     }
     let ncv = options
         .ncv
-        .unwrap_or_else(|| (2 * nev_usize + 4).min(n - 1).max(nev_usize + 2));
+        .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 2));
 
     let n_i32 = c_int_from_usize(n)?;
+    let nev_i32 = c_int_from_usize(nev)?;
     let ncv_i32 = c_int_from_usize(ncv)?;
     let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 
-    if !(nev > 0 && ncv_i32 >= nev + 2 && ncv_i32 < n_i32) {
-        return Err(Error::InvalidParam(
-            "require 0 < nev, nev + 2 <= ncv, and ncv < n",
-        ));
+    if !(ncv_i32 >= nev_i32 + 2 && ncv_i32 < n_i32) {
+        return Err(Error::InvalidParam("require nev + 2 <= ncv and ncv < n"));
     }
     if max_iter_i32 <= 0 {
         return Err(Error::InvalidParam("max_iter must be positive"));
@@ -353,25 +477,24 @@ where
     let mut rwork = vec![0.0f32; ncv];
 
     let bmat = c"I".as_ptr();
-    let which = c"SR".as_ptr();
+    let which_ptr = which.as_c_str().as_ptr();
 
     let _guard = lock();
 
     let mut ido: c_int = 0;
     let mut info: c_int = 0;
-    let mut matvec = matvec;
     let mut x_buf = vec![zero; n];
 
     loop {
-        // SAFETY: identical reasoning to `smallest_eigenpair_c64`,
+        // SAFETY: identical reasoning to `eigenpairs_c64_impl`,
         // with `Complex32` storage instead of `Complex64`.
         unsafe {
             cnaupd_c(
                 &mut ido,
                 bmat,
                 n_i32,
-                which,
-                nev,
+                which_ptr,
+                nev_i32,
                 tol,
                 resid.as_mut_ptr() as *mut __BindgenComplex<f32>,
                 ncv_i32,
@@ -400,23 +523,25 @@ where
         }
     }
 
-    // See `smallest_eigenpair_c64` for the rationale on splitting
-    // `info == 1` (max_iter, no usable pair) from generic `AupdFailed`.
-    if info == 1 {
+    let nconv = usize_from_iparam(iparam[4]);
+    let iters = usize_from_iparam(iparam[2]);
+    let n_matvec = usize_from_iparam(iparam[8]);
+
+    if info == 1 && nconv == 0 {
         return Err(Error::MaxIterReached {
-            iters: usize_from_iparam(iparam[2]),
-            nconv: usize_from_iparam(iparam[4]),
-            n_matvec: usize_from_iparam(iparam[8]),
+            iters,
+            nconv,
+            n_matvec,
         });
     }
-    if info != 0 {
+    if info != 0 && info != 1 {
         return Err(Error::AupdFailed(info));
     }
 
     let rvec: c_int = 1;
     let howmny = c"A".as_ptr();
     let mut select = vec![0i32; ncv];
-    let mut d = vec![zero; nev_usize];
+    let mut d = vec![zero; nev];
     let sigma = __BindgenComplex {
         re: 0.0_f32,
         im: 0.0_f32,
@@ -438,8 +563,8 @@ where
             workev.as_mut_ptr() as *mut __BindgenComplex<f32>,
             bmat,
             n_i32,
-            which,
-            nev,
+            which_ptr,
+            nev_i32,
             tol,
             resid.as_mut_ptr() as *mut __BindgenComplex<f32>,
             ncv_i32,
@@ -459,15 +584,19 @@ where
         return Err(Error::EupdFailed(info_eup));
     }
 
-    let value = d[0];
-    let mut vector = vec![zero; n];
-    vector.copy_from_slice(&v[..n]);
-    Ok(EigSolution {
-        eigenvalue: value,
-        eigenvector: vector,
-        iters: usize_from_iparam(iparam[2]),
-        nconv: usize_from_iparam(iparam[4]),
-        n_matvec: usize_from_iparam(iparam[8]),
+    let eigenvalues = d[..nconv].to_vec();
+    let mut eigenvectors = Vec::with_capacity(nconv);
+    for k in 0..nconv {
+        eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
+    }
+
+    Ok(MultiEigSolution {
+        eigenvalues,
+        eigenvectors,
+        nev_requested: nev,
+        nconv,
+        iters,
+        n_matvec,
     })
 }
 

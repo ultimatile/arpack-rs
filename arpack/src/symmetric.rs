@@ -1,10 +1,15 @@
 //! Real-symmetric eigenvalue drivers backed by the ARPACK-NG
 //! `{s,d}{sa,se}upd_c` family (Implicitly Restarted Lanczos).
 //!
-//! The current surface is intentionally narrow: a smallest algebraic
-//! eigenpair function for each of `f64` and `f32` operators, supplied
-//! through a matrix-vector closure. Additional `Which` modes and
-//! multi-eigenvalue extraction can be layered on later.
+//! The crate exposes two layers:
+//!
+//! - [`eigenpairs_f64`] / [`eigenpairs_f32`] — general entry point
+//!   accepting `nev >= 1` and a [`Which`] selector. Returns a
+//!   [`MultiEigSolution<T>`] carrying the converged eigenpairs.
+//! - [`smallest_eigenpair_f64`] / [`smallest_eigenpair_f32`] —
+//!   convenience wrappers fixed to `nev = 1` and
+//!   [`Which::SmallestAlgebraic`]. Returns the original
+//!   [`EigSolution<T>`].
 //!
 //! Thread-safety: every entry point acquires a process-wide mutex
 //! so the entire `*aupd_c` + `*eupd_c` sequence runs atomically
@@ -16,7 +21,8 @@ use arpack_sys::{dsaupd_c, dseupd_c, ssaupd_c, sseupd_c};
 
 use crate::error::Error;
 use crate::lock::lock;
-use crate::solution::{EigSolution, usize_from_iparam};
+use crate::solution::{EigSolution, MultiEigSolution, usize_from_iparam};
+use crate::which::Which;
 
 /// Tunable parameters for the Lanczos driver.
 #[derive(Clone, Debug)]
@@ -45,29 +51,79 @@ impl Default for Options {
     }
 }
 
-/// Smallest algebraic eigenpair of a real symmetric operator.
+/// Compute up to `nev` eigenpairs of a real symmetric operator.
 ///
 /// The operator is provided as a matrix-vector closure: `matvec(x, y)`
-/// must compute `y <- A x` where both slices have length `n`.
+/// must compute `y <- A x` where both slices have length `n`. The
+/// [`Which`] selector controls which Ritz values to retain — must be
+/// one of [`Which::SmallestAlgebraic`], [`Which::LargestAlgebraic`],
+/// [`Which::SmallestMagnitude`], [`Which::LargestMagnitude`]
+/// (per-family restriction enforced by the wrapper).
 ///
-/// Returns an [`EigSolution`] with the eigenpair and the diagnostic
-/// counters ARPACK wrote back into `iparam` (actual iterations, number
-/// converged, matvec applications). The eigenvector is normalized per
-/// ARPACK's convention (unit 2-norm).
+/// Returns a [`MultiEigSolution<f64>`] holding `nconv` converged
+/// eigenpairs (with `nconv <= nev`) plus iparam diagnostics. The
+/// real-symmetric drivers always return eigenvalues in **ascending
+/// algebraic order**, regardless of `Which` — `LargestAlgebraic`
+/// with `nev = 3` returns the three largest eigenvalues sorted
+/// smallest-of-the-three first.
 ///
-/// If ARPACK hits `Options::max_iter` before the requested Ritz pair
-/// converges, the call returns [`Error::MaxIterReached`] (carrying
-/// the same iparam diagnostics) rather than `Ok` — for the
-/// single-eigenpair drivers exposed today there is no usable partial
-/// pair to extract. See [`Error`] for the other failure modes.
+/// On `Options::max_iter` exhaustion with `nconv == 0`, returns
+/// [`Error::MaxIterReached`]; on exhaustion with `0 < nconv < nev`,
+/// returns `Ok(MultiEigSolution { nconv, .. })` carrying the
+/// partial set (ARPACK's `*seupd` extracts the converged pairs
+/// cleanly when `nconv >= 1`).
 ///
 /// # Allocation
 ///
-/// Workspace sizes scale as `O(n * ncv)`. Inputs whose byte size exceeds
-/// `isize::MAX` (relevant in practice only on 32-bit targets) cause the
-/// underlying `Vec` allocations to panic rather than return
-/// [`Error::InvalidParam`] — this matches the standard library's own
-/// allocation-failure convention.
+/// Workspace sizes scale as `O(n * ncv)`. Inputs whose byte size
+/// exceeds `isize::MAX` cause the underlying `Vec` allocations to
+/// panic rather than return [`Error::InvalidParam`] — same
+/// convention as the standard library.
+pub fn eigenpairs_f64<F>(
+    n: usize,
+    nev: usize,
+    which: Which,
+    matvec: F,
+    options: &Options,
+) -> Result<MultiEigSolution<f64>, Error>
+where
+    F: FnMut(&[f64], &mut [f64]),
+{
+    eigenpairs_f64_impl(n, nev, which, matvec, options)
+}
+
+/// Compute up to `nev` eigenpairs of a real symmetric operator,
+/// f32 precision.
+///
+/// See [`eigenpairs_f64`] for the long-form contract. f32 is
+/// rarely useful for production eigenvalue work — the achievable
+/// convergence is bounded by the scalar's relative epsilon
+/// (~`1.2e-7`). The tolerance is accepted as `f64` to keep
+/// [`Options`] uniform and is cast to `f32` at the FFI boundary.
+pub fn eigenpairs_f32<F>(
+    n: usize,
+    nev: usize,
+    which: Which,
+    matvec: F,
+    options: &Options,
+) -> Result<MultiEigSolution<f32>, Error>
+where
+    F: FnMut(&[f32], &mut [f32]),
+{
+    eigenpairs_f32_impl(n, nev, which, matvec, options)
+}
+
+/// Smallest algebraic eigenpair of a real symmetric operator.
+///
+/// Thin wrapper around [`eigenpairs_f64`] with `nev = 1` and
+/// [`Which::SmallestAlgebraic`]. Returns a singular
+/// [`EigSolution<f64>`].
+///
+/// On `Options::max_iter` exhaustion, returns
+/// [`Error::MaxIterReached`] — at `nev = 1` the only legal
+/// post-`info=1` state is `nconv = 0`, so the partial-Ok path
+/// of [`eigenpairs_f64`] cannot fire here. See [`eigenpairs_f64`]
+/// for the other failure modes.
 pub fn smallest_eigenpair_f64<F>(
     n: usize,
     matvec: F,
@@ -76,41 +132,90 @@ pub fn smallest_eigenpair_f64<F>(
 where
     F: FnMut(&[f64], &mut [f64]),
 {
-    let nev: c_int = 1;
-    let nev_usize = nev as usize;
-    // The wrapper enforces a strict `ncv < n` ceiling so IRLM always
-    // has at least one free Krylov dimension to restart against; this
-    // requires `n >= nev + 2` so the smallest legal `ncv` (`nev + 1`)
-    // still fits below `n`.
-    if n < nev_usize + 2 {
+    let multi = eigenpairs_f64(n, 1, Which::SmallestAlgebraic, matvec, options)?;
+    Ok(singular_from_multi(multi))
+}
+
+/// Smallest algebraic eigenpair of a real symmetric operator,
+/// f32 precision. See [`smallest_eigenpair_f64`] for the
+/// long-form contract.
+pub fn smallest_eigenpair_f32<F>(
+    n: usize,
+    matvec: F,
+    options: &Options,
+) -> Result<EigSolution<f32>, Error>
+where
+    F: FnMut(&[f32], &mut [f32]),
+{
+    let multi = eigenpairs_f32(n, 1, Which::SmallestAlgebraic, matvec, options)?;
+    Ok(singular_from_multi(multi))
+}
+
+fn singular_from_multi<T>(multi: MultiEigSolution<T>) -> EigSolution<T> {
+    // info = 0 from *aupd guarantees nconv >= nev = 1, so the
+    // vectors are non-empty. The partial-Ok branch (0 < nconv < nev)
+    // is unreachable at nev = 1 — there is no integer strictly
+    // between 0 and 1.
+    let mut eigenvalues = multi.eigenvalues;
+    let mut eigenvectors = multi.eigenvectors;
+    let eigenvalue = eigenvalues
+        .pop()
+        .expect("eigenpairs_* with nev=1 returns at least one Ritz value on Ok");
+    let eigenvector = eigenvectors
+        .pop()
+        .expect("eigenpairs_* with nev=1 returns at least one eigenvector on Ok");
+    EigSolution {
+        eigenvalue,
+        eigenvector,
+        iters: multi.iters,
+        nconv: multi.nconv,
+        n_matvec: multi.n_matvec,
+    }
+}
+
+fn eigenpairs_f64_impl<F>(
+    n: usize,
+    nev: usize,
+    which: Which,
+    mut matvec: F,
+    options: &Options,
+) -> Result<MultiEigSolution<f64>, Error>
+where
+    F: FnMut(&[f64], &mut [f64]),
+{
+    if nev == 0 {
+        return Err(Error::InvalidParam("nev must be positive"));
+    }
+    if !which.accepted_by_symmetric() {
+        return Err(Error::InvalidParam(
+            "Which selector not accepted by the real-symmetric driver",
+        ));
+    }
+    // IRLM enforces a strict `ncv < n` ceiling so it always has at
+    // least one free Krylov dimension to restart against; the
+    // smallest legal `ncv` is `nev + 1`, hence the precondition
+    // `n >= nev + 2`.
+    if n < nev + 2 {
         return Err(Error::InvalidParam(
             "n too small for ARPACK (require n >= nev + 2)",
         ));
     }
-    // Default: target `2*nev + 4` Krylov vectors, capped strictly
-    // below `n` and floored at `nev + 1`. The previous floor of
-    // `nev + 2` was too conservative — for `n = nev + 2` it lifted
-    // `ncv` back up to `n`, defeating the ceiling.
     let ncv = options
         .ncv
-        .unwrap_or_else(|| (2 * nev_usize + 4).min(n - 1).max(nev_usize + 1));
+        .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 1));
 
-    let n_i32 = c_int_from_usize(n, "n")?;
-    let ncv_i32 = c_int_from_usize(ncv, "ncv")?;
-    let max_iter_i32 = c_int_from_usize(options.max_iter, "max_iter")?;
+    let n_i32 = c_int_from_usize(n)?;
+    let nev_i32 = c_int_from_usize(nev)?;
+    let ncv_i32 = c_int_from_usize(ncv)?;
+    let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 
-    if !(nev > 0 && nev < ncv_i32 && ncv_i32 < n_i32) {
-        return Err(Error::InvalidParam("require 0 < nev < ncv < n"));
+    if !(nev_i32 < ncv_i32 && ncv_i32 < n_i32) {
+        return Err(Error::InvalidParam("require nev < ncv < n"));
     }
     if max_iter_i32 <= 0 {
         return Err(Error::InvalidParam("max_iter must be positive"));
     }
 
-    // All buffer allocations multiply user-controlled `n` and `ncv`.
-    // On 32-bit targets these products can overflow `usize` even
-    // though the individual values pass the `c_int` range check, so
-    // verify each one explicitly before requesting allocations that
-    // ARPACK will then index using the un-overflowed `n` / `ncv`.
     let v_len = n
         .checked_mul(ncv)
         .ok_or(Error::InvalidParam("n * ncv overflows usize"))?;
@@ -122,11 +227,7 @@ where
         .and_then(|s| ncv.checked_mul(s))
         .ok_or(Error::InvalidParam("ncv * (ncv + 8) overflows usize"))?;
 
-    // Convert every length we need to pass into ARPACK to `c_int`
-    // *before* requesting allocations. This keeps the failure mode
-    // for absurdly-large inputs as a fast `InvalidParam` rather than
-    // an OOM after committing to multi-gigabyte vectors.
-    let lworkl_i32 = c_int_from_usize(lworkl, "lworkl")?;
+    let lworkl_i32 = c_int_from_usize(lworkl)?;
 
     let mut resid = vec![0.0f64; n];
     let mut v = vec![0.0f64; v_len];
@@ -141,32 +242,26 @@ where
     let mut workl = vec![0.0f64; lworkl];
 
     let bmat = c"I".as_ptr();
-    let which = c"SA".as_ptr();
+    let which_ptr = which.as_c_str().as_ptr();
 
     let _guard = lock();
 
     let mut ido: c_int = 0;
     let mut info: c_int = 0;
-    let mut matvec = matvec;
-    // Reusable input buffer so the matvec closure always sees a stable
-    // read-only view, regardless of whether ARPACK's `ipntr` happens
-    // to point the X and Y windows to overlapping (or identical)
-    // sub-ranges of `workd`. This costs one copy per ido callback but
-    // avoids a tricky borrowing case for in-place operator modes.
     let mut x_buf = vec![0.0f64; n];
 
     loop {
-        // SAFETY: All pointer arguments alias `Vec`-owned buffers that
-        // outlive this call; bound checks above guarantee the lengths
-        // match what ARPACK reads/writes. ARPACK is single-threaded
-        // here (no concurrent calls).
+        // SAFETY: All pointer arguments alias `Vec`-owned buffers
+        // that outlive this call; bound checks above guarantee the
+        // lengths match what ARPACK reads/writes. ARPACK is
+        // single-threaded here via the process-wide lock.
         unsafe {
             dsaupd_c(
                 &mut ido,
                 bmat,
                 n_i32,
-                which,
-                nev,
+                which_ptr,
+                nev_i32,
                 options.tol,
                 resid.as_mut_ptr(),
                 ncv_i32,
@@ -194,33 +289,39 @@ where
         }
     }
 
-    // ARPACK convention: info < 0 is misuse / numerical failure;
-    // info = 1 means the iteration hit `max_iter` before nev Ritz
-    // pairs converged. Because `nev = 1` is hardcoded here, info = 1
-    // always implies `nconv = 0`, which means `*seupd` quick-returns
-    // without writing `d` / `z` — calling it would silently produce
-    // a zeroed eigenvalue and the first Lanczos basis vector. Surface
-    // this as `Error::MaxIterReached` (with the iparam diagnostics
-    // preserved) instead of a bogus `Ok`. Other non-zero codes are
-    // surfaced as `AupdFailed` (e.g. info = 3 means try a larger ncv).
-    if info == 1 {
+    // info handling per the unified two-stage protocol:
+    // - info = 0  : full convergence, extract nev Ritz pairs.
+    // - info = 1  : max_iter hit. Read iparam[4] = nconv:
+    //     * nconv == 0  → MaxIterReached (skip *eupd; dseupd would
+    //                     quick-return via the `nconv .eq. 0`
+    //                     guard in SRC/dseupd.f, leaving d/z
+    //                     zeroed).
+    //     * nconv >= 1  → call *eupd, extract `nconv` valid pairs
+    //                     (dseupd accepts partial extraction).
+    // - info < 0 / other info > 1 → AupdFailed.
+    let nconv = usize_from_iparam(iparam[4]);
+    let iters = usize_from_iparam(iparam[2]);
+    let n_matvec = usize_from_iparam(iparam[8]);
+
+    if info == 1 && nconv == 0 {
         return Err(Error::MaxIterReached {
-            iters: usize_from_iparam(iparam[2]),
-            nconv: usize_from_iparam(iparam[4]),
-            n_matvec: usize_from_iparam(iparam[8]),
+            iters,
+            nconv,
+            n_matvec,
         });
     }
-    if info != 0 {
+    if info != 0 && info != 1 {
         return Err(Error::AupdFailed(info));
     }
+    // At this point: info == 0 (nconv typically == nev) or
+    // info == 1 && nconv >= 1 (partial-Ok path). Both call *eupd.
 
-    // Extract eigenvalue and eigenvector. `z` aliases `v` in-place,
-    // which is the standard ARPACK pattern and avoids an extra n*nev
-    // allocation.
     let rvec: c_int = 1;
     let howmny = c"A".as_ptr();
     let mut select = vec![0i32; ncv];
-    let mut d = vec![0.0f64; nev as usize];
+    // d is sized to nev (ARPACK's documented buffer size) but only
+    // d[..nconv] is meaningful on return.
+    let mut d = vec![0.0f64; nev];
     let sigma = 0.0f64;
     let mut info_eup: c_int = 0;
 
@@ -236,8 +337,8 @@ where
             sigma,
             bmat,
             n_i32,
-            which,
-            nev,
+            which_ptr,
+            nev_i32,
             options.tol,
             resid.as_mut_ptr(),
             ncv_i32,
@@ -256,55 +357,58 @@ where
         return Err(Error::EupdFailed(info_eup));
     }
 
-    let value = d[0];
-    let mut vector = vec![0.0f64; n];
-    vector.copy_from_slice(&v[..n]);
-    Ok(EigSolution {
-        eigenvalue: value,
-        eigenvector: vector,
-        iters: usize_from_iparam(iparam[2]),
-        nconv: usize_from_iparam(iparam[4]),
-        n_matvec: usize_from_iparam(iparam[8]),
+    // ARPACK wrote d[..nconv] and v[.., 0..nconv] (column-major).
+    // Slots beyond nconv are undefined and must not be exposed.
+    let eigenvalues = d[..nconv].to_vec();
+    let mut eigenvectors = Vec::with_capacity(nconv);
+    for k in 0..nconv {
+        eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
+    }
+
+    Ok(MultiEigSolution {
+        eigenvalues,
+        eigenvectors,
+        nev_requested: nev,
+        nconv,
+        iters,
+        n_matvec,
     })
 }
 
-/// Smallest algebraic eigenpair of a real symmetric operator, f32
-/// precision. See [`smallest_eigenpair_f64`] for the long-form
-/// contract; this entry point is identical except for the working
-/// precision, and accepts the tolerance as `f64` to keep
-/// [`Options`] uniform across precisions (the value is cast to
-/// `f32` at the FFI boundary).
-///
-/// f32 precision in eigenvalue computation is rarely useful for
-/// production work — the achievable convergence is bounded by the
-/// scalar's relative epsilon (~`1.2e-7`). This entry point exists
-/// for completeness and for callers (e.g. mixed-precision
-/// pipelines, GPU staging) that produce f32 operators.
-pub fn smallest_eigenpair_f32<F>(
+fn eigenpairs_f32_impl<F>(
     n: usize,
-    matvec: F,
+    nev: usize,
+    which: Which,
+    mut matvec: F,
     options: &Options,
-) -> Result<EigSolution<f32>, Error>
+) -> Result<MultiEigSolution<f32>, Error>
 where
     F: FnMut(&[f32], &mut [f32]),
 {
-    let nev: c_int = 1;
-    let nev_usize = nev as usize;
-    if n < nev_usize + 2 {
+    if nev == 0 {
+        return Err(Error::InvalidParam("nev must be positive"));
+    }
+    if !which.accepted_by_symmetric() {
+        return Err(Error::InvalidParam(
+            "Which selector not accepted by the real-symmetric driver",
+        ));
+    }
+    if n < nev + 2 {
         return Err(Error::InvalidParam(
             "n too small for ARPACK (require n >= nev + 2)",
         ));
     }
     let ncv = options
         .ncv
-        .unwrap_or_else(|| (2 * nev_usize + 4).min(n - 1).max(nev_usize + 1));
+        .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 1));
 
-    let n_i32 = c_int_from_usize(n, "n")?;
-    let ncv_i32 = c_int_from_usize(ncv, "ncv")?;
-    let max_iter_i32 = c_int_from_usize(options.max_iter, "max_iter")?;
+    let n_i32 = c_int_from_usize(n)?;
+    let nev_i32 = c_int_from_usize(nev)?;
+    let ncv_i32 = c_int_from_usize(ncv)?;
+    let max_iter_i32 = c_int_from_usize(options.max_iter)?;
 
-    if !(nev > 0 && nev < ncv_i32 && ncv_i32 < n_i32) {
-        return Err(Error::InvalidParam("require 0 < nev < ncv < n"));
+    if !(nev_i32 < ncv_i32 && ncv_i32 < n_i32) {
+        return Err(Error::InvalidParam("require nev < ncv < n"));
     }
     if max_iter_i32 <= 0 {
         return Err(Error::InvalidParam("max_iter must be positive"));
@@ -321,7 +425,7 @@ where
         .and_then(|s| ncv.checked_mul(s))
         .ok_or(Error::InvalidParam("ncv * (ncv + 8) overflows usize"))?;
 
-    let lworkl_i32 = c_int_from_usize(lworkl, "lworkl")?;
+    let lworkl_i32 = c_int_from_usize(lworkl)?;
 
     let tol = options.tol as f32;
     let mut resid = vec![0.0f32; n];
@@ -337,25 +441,24 @@ where
     let mut workl = vec![0.0f32; lworkl];
 
     let bmat = c"I".as_ptr();
-    let which = c"SA".as_ptr();
+    let which_ptr = which.as_c_str().as_ptr();
 
     let _guard = lock();
 
     let mut ido: c_int = 0;
     let mut info: c_int = 0;
-    let mut matvec = matvec;
     let mut x_buf = vec![0.0f32; n];
 
     loop {
-        // SAFETY: identical reasoning to `smallest_eigenpair_f64`,
+        // SAFETY: identical reasoning to `eigenpairs_f64_impl`,
         // with `f32` storage instead of `f64`.
         unsafe {
             ssaupd_c(
                 &mut ido,
                 bmat,
                 n_i32,
-                which,
-                nev,
+                which_ptr,
+                nev_i32,
                 tol,
                 resid.as_mut_ptr(),
                 ncv_i32,
@@ -383,23 +486,25 @@ where
         }
     }
 
-    // See `smallest_eigenpair_f64` for the rationale on splitting
-    // `info == 1` (max_iter, no usable pair) from generic `AupdFailed`.
-    if info == 1 {
+    let nconv = usize_from_iparam(iparam[4]);
+    let iters = usize_from_iparam(iparam[2]);
+    let n_matvec = usize_from_iparam(iparam[8]);
+
+    if info == 1 && nconv == 0 {
         return Err(Error::MaxIterReached {
-            iters: usize_from_iparam(iparam[2]),
-            nconv: usize_from_iparam(iparam[4]),
-            n_matvec: usize_from_iparam(iparam[8]),
+            iters,
+            nconv,
+            n_matvec,
         });
     }
-    if info != 0 {
+    if info != 0 && info != 1 {
         return Err(Error::AupdFailed(info));
     }
 
     let rvec: c_int = 1;
     let howmny = c"A".as_ptr();
     let mut select = vec![0i32; ncv];
-    let mut d = vec![0.0f32; nev as usize];
+    let mut d = vec![0.0f32; nev];
     let sigma = 0.0f32;
     let mut info_eup: c_int = 0;
 
@@ -415,8 +520,8 @@ where
             sigma,
             bmat,
             n_i32,
-            which,
-            nev,
+            which_ptr,
+            nev_i32,
             tol,
             resid.as_mut_ptr(),
             ncv_i32,
@@ -435,21 +540,22 @@ where
         return Err(Error::EupdFailed(info_eup));
     }
 
-    let value = d[0];
-    let mut vector = vec![0.0f32; n];
-    vector.copy_from_slice(&v[..n]);
-    Ok(EigSolution {
-        eigenvalue: value,
-        eigenvector: vector,
-        iters: usize_from_iparam(iparam[2]),
-        nconv: usize_from_iparam(iparam[4]),
-        n_matvec: usize_from_iparam(iparam[8]),
+    let eigenvalues = d[..nconv].to_vec();
+    let mut eigenvectors = Vec::with_capacity(nconv);
+    for k in 0..nconv {
+        eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
+    }
+
+    Ok(MultiEigSolution {
+        eigenvalues,
+        eigenvectors,
+        nev_requested: nev,
+        nconv,
+        iters,
+        n_matvec,
     })
 }
 
-fn c_int_from_usize(value: usize, name: &'static str) -> Result<c_int, Error> {
-    c_int::try_from(value).map_err(|_| {
-        let _ = name; // kept for future error-context expansion
-        Error::InvalidParam("value does not fit in c_int")
-    })
+fn c_int_from_usize(value: usize) -> Result<c_int, Error> {
+    c_int::try_from(value).map_err(|_| Error::InvalidParam("value does not fit in c_int"))
 }

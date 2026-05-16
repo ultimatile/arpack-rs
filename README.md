@@ -71,9 +71,14 @@ assert!((solution.eigenvalue - 1.0).abs() < 1e-9);
 
 (Direct `arpack-sys` usage is also supported for callers that want to drive ARPACK manually.)
 
-## Current limitations
+## Driver surface
 
-The safe wrapper currently exposes only the smallest eigenpair (`nev = 1`) with a fixed `which` selector — `"SA"` (smallest algebraic) for the real-symmetric Lanczos driver, `"SR"` (smallest real part) for the complex Arnoldi driver. Multi-eigenvalue extraction (`nev > 1`) and a configurable `which` selector are tracked at <https://github.com/ultimatile/arpack-rs/issues/1>.
+Each driver family exposes two layers:
+
+- `eigenpairs_*` (`f32`, `f64`, `c32`, `c64`) — general entry point accepting `nev >= 1` and a `Which` selector (`SmallestAlgebraic` / `LargestAlgebraic` / `SmallestRealPart` / `LargestRealPart` / `SmallestImagPart` / `LargestImagPart` / `SmallestMagnitude` / `LargestMagnitude`, restricted per driver family). Returns a `MultiEigSolution` holding `nconv` converged eigenpairs.
+- `smallest_eigenpair_*` — convenience wrapper fixed to `nev = 1` and the family's "smallest" mode. Returns a singular `EigSolution`.
+
+The real non-symmetric `{s,d}{na,ne}upd_c` family is not wrapped yet.
 
 ## License
 
