@@ -188,439 +188,279 @@ fn singular_from_multi<T>(multi: MultiEigSolution<T>) -> EigSolution<T> {
     }
 }
 
-fn eigenpairs_c64_impl<F>(
-    n: usize,
-    nev: usize,
-    which: Which,
-    mut matvec: F,
-    options: &Options,
-) -> Result<MultiEigSolution<Complex64>, Error>
-where
-    F: FnMut(&[Complex64], &mut [Complex64]),
-{
-    if nev == 0 {
-        return Err(Error::InvalidParam("nev must be positive"));
-    }
-    if !which.accepted_by_complex_arnoldi() {
-        return Err(Error::InvalidParam(
-            "Which selector not accepted by the complex Arnoldi driver",
-        ));
-    }
-    // Bound `nev` (caller-controlled) to the `c_int` range before
-    // using it in `usize` arithmetic (`nev + 3`, `2 * nev + 4`,
-    // `nev + 2`, `nev_i32 + 2`). On 64-bit targets — the only ones
-    // supported per the workspace's `compile_error!` — the bounded
-    // value cannot overflow in those expressions; without this
-    // upfront check, `nev = usize::MAX` panics in debug builds.
-    let nev_i32 = c_int_from_usize(nev)?;
-    // Complex Arnoldi has a tighter constraint than real symmetric:
-    // `zneupd` rejects `ncv - nev < 2` with `info = -3`, so the
-    // smallest legal `ncv` is `nev + 2` and the precondition on
-    // `n` is `n >= nev + 3`.
-    if n < nev + 3 {
-        return Err(Error::InvalidParam(
-            "n too small for complex Arnoldi (require n >= nev + 3)",
-        ));
-    }
-    let ncv = options
-        .ncv
-        .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 2));
-
-    let n_i32 = c_int_from_usize(n)?;
-    let ncv_i32 = c_int_from_usize(ncv)?;
-    let max_iter_i32 = c_int_from_usize(options.max_iter)?;
-
-    if !(ncv_i32 >= nev_i32 + 2 && ncv_i32 < n_i32) {
-        return Err(Error::InvalidParam("require nev + 2 <= ncv and ncv < n"));
-    }
-    if max_iter_i32 <= 0 {
-        return Err(Error::InvalidParam("max_iter must be positive"));
-    }
-
-    let v_len = n
-        .checked_mul(ncv)
-        .ok_or(Error::InvalidParam("n * ncv overflows usize"))?;
-    let workd_len = n
-        .checked_mul(3)
-        .ok_or(Error::InvalidParam("3 * n overflows usize"))?;
-    let ncv_sq = ncv
-        .checked_mul(ncv)
-        .ok_or(Error::InvalidParam("ncv * ncv overflows usize"))?;
-    let three_ncv_sq = ncv_sq
-        .checked_mul(3)
-        .ok_or(Error::InvalidParam("3 * ncv^2 overflows usize"))?;
-    let five_ncv = ncv
-        .checked_mul(5)
-        .ok_or(Error::InvalidParam("5 * ncv overflows usize"))?;
-    let lworkl = three_ncv_sq
-        .checked_add(five_ncv)
-        .ok_or(Error::InvalidParam("3*ncv^2 + 5*ncv overflows usize"))?;
-    let workev_len = ncv
-        .checked_mul(2)
-        .ok_or(Error::InvalidParam("2 * ncv overflows usize"))?;
-
-    let lworkl_i32 = c_int_from_usize(lworkl)?;
-
-    let zero = Complex64::new(0.0, 0.0);
-    let mut resid = vec![zero; n];
-    let mut v = vec![zero; v_len];
-    let ldv = n_i32;
-    let mut iparam = [0i32; 11];
-    iparam[0] = 1; // exact shifts via ARPACK
-    iparam[2] = max_iter_i32;
-    iparam[3] = 1; // NB block size; ARPACK only supports NB = 1
-    iparam[6] = 1; // mode 1: standard problem A x = lambda x
-    // znaupd's ICB Fortran wrapper declares `ipntr(14)`, unlike
-    // dsaupd's `ipntr(11)`. Allocating shorter is an OOB write.
-    let mut ipntr = [0i32; 14];
-    let mut workd = vec![zero; workd_len];
-    let mut workl = vec![zero; lworkl];
-    let mut rwork = vec![0.0f64; ncv];
-
-    let bmat = c"I".as_ptr();
-    let which_ptr = which.as_c_str().as_ptr();
-
-    let _guard = lock();
-
-    let mut ido: c_int = 0;
-    let mut info: c_int = 0;
-    let mut x_buf = vec![zero; n];
-
-    loop {
-        // SAFETY: Every pointer aliases a Vec whose length matches
-        // (or exceeds) what ARPACK reads/writes; the `Complex64` ↔
-        // `__BindgenComplex<f64>` cast is sound because both are
-        // `#[repr(C)] { re: f64, im: f64 }`. The process-wide lock
-        // serializes ARPACK's Fortran SAVE state.
-        unsafe {
-            znaupd_c(
-                &mut ido,
-                bmat,
-                n_i32,
-                which_ptr,
-                nev_i32,
-                options.tol,
-                resid.as_mut_ptr() as *mut __BindgenComplex<f64>,
-                ncv_i32,
-                v.as_mut_ptr() as *mut __BindgenComplex<f64>,
-                ldv,
-                iparam.as_mut_ptr(),
-                ipntr.as_mut_ptr(),
-                workd.as_mut_ptr() as *mut __BindgenComplex<f64>,
-                workl.as_mut_ptr() as *mut __BindgenComplex<f64>,
-                lworkl_i32,
-                rwork.as_mut_ptr(),
-                &mut info,
-            );
-        }
-
-        match ido {
-            -1 | 1 => {
-                let x_off = (ipntr[0] - 1) as usize;
-                let y_off = (ipntr[1] - 1) as usize;
-                debug_assert!(x_off + n <= workd.len() && y_off + n <= workd.len());
-                x_buf.copy_from_slice(&workd[x_off..x_off + n]);
-                matvec(&x_buf, &mut workd[y_off..y_off + n]);
-            }
-            99 => break,
-            other => return Err(Error::UnexpectedIdo(other)),
-        }
-    }
-
-    // info handling (uniform with the symmetric driver per the
-    // research finding that zneupd guards `-14` on `nconv .le. 0`,
-    // not on `nconv < nev`):
-    // - info = 0           : full convergence, extract nev pairs.
-    // - info = 1, nconv=0  : MaxIterReached (skip *eupd; zneupd
-    //                        would return info = -14).
-    // - info = 1, nconv>=1 : call *eupd, extract `nconv` pairs.
-    // - other              : AupdFailed.
-    let nconv = usize_from_iparam(iparam[4]);
-    let iters = usize_from_iparam(iparam[2]);
-    let n_matvec = usize_from_iparam(iparam[8]);
-
-    if info == 1 && nconv == 0 {
-        return Err(Error::MaxIterReached {
-            iters,
-            nconv,
-            n_matvec,
-        });
-    }
-    if info != 0 && info != 1 {
-        return Err(Error::AupdFailed(info));
-    }
-
-    let rvec: c_int = 1;
-    let howmny = c"A".as_ptr();
-    let mut select = vec![0i32; ncv];
-    let mut d = vec![zero; nev];
-    let sigma = __BindgenComplex { re: 0.0, im: 0.0 };
-    let mut workev = vec![zero; workev_len];
-    let mut info_eup: c_int = 0;
-
-    // SAFETY: as for znaupd_c above; v doubles as z (output
-    // eigenvector storage), which is the standard ARPACK pattern.
-    unsafe {
-        zneupd_c(
-            rvec,
-            howmny,
-            select.as_mut_ptr(),
-            d.as_mut_ptr() as *mut __BindgenComplex<f64>,
-            v.as_mut_ptr() as *mut __BindgenComplex<f64>,
-            ldv,
-            sigma,
-            workev.as_mut_ptr() as *mut __BindgenComplex<f64>,
-            bmat,
-            n_i32,
-            which_ptr,
-            nev_i32,
-            options.tol,
-            resid.as_mut_ptr() as *mut __BindgenComplex<f64>,
-            ncv_i32,
-            v.as_mut_ptr() as *mut __BindgenComplex<f64>,
-            ldv,
-            iparam.as_mut_ptr(),
-            ipntr.as_mut_ptr(),
-            workd.as_mut_ptr() as *mut __BindgenComplex<f64>,
-            workl.as_mut_ptr() as *mut __BindgenComplex<f64>,
-            lworkl_i32,
-            rwork.as_mut_ptr(),
-            &mut info_eup,
-        );
-    }
-
-    if info_eup != 0 {
-        return Err(Error::EupdFailed(info_eup));
-    }
-
-    // Cap the surfaced count at `nev`: ARPACK may report
-    // `nconv > nev` ("bonus" Ritz values satisfying the convergence
-    // bound), but `d` is sized to `nev` per the documented `*eupd`
-    // interface, so slots beyond `nev` are not safely indexable.
-    // Preserve the raw `iparam[4]` count in `nconv` as a diagnostic;
-    // truncate the eigenvalue / eigenvector arrays to `nev`.
-    let extracted = nconv.min(nev);
-    let eigenvalues = d[..extracted].to_vec();
-    let mut eigenvectors = Vec::with_capacity(extracted);
-    for k in 0..extracted {
-        eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
-    }
-
-    Ok(MultiEigSolution {
-        eigenvalues,
-        eigenvectors,
-        nev_requested: nev,
-        nconv,
-        iters,
-        n_matvec,
-    })
+/// Narrow `Options::tol` (always stored as `f64`) to the driver's
+/// working float precision. The macro selects one of these by name so
+/// the f64 path is the identity `tol_as_f64` rather than an `f64 as f64`
+/// that would trip `clippy::unnecessary_cast`; the f32 path does the
+/// real `as f32` narrowing.
+fn tol_as_f64(tol: f64) -> f64 {
+    tol
 }
 
-fn eigenpairs_c32_impl<F>(
-    n: usize,
-    nev: usize,
-    which: Which,
-    mut matvec: F,
-    options: &Options,
-) -> Result<MultiEigSolution<Complex32>, Error>
-where
-    F: FnMut(&[Complex32], &mut [Complex32]),
-{
-    if nev == 0 {
-        return Err(Error::InvalidParam("nev must be positive"));
-    }
-    if !which.accepted_by_complex_arnoldi() {
-        return Err(Error::InvalidParam(
-            "Which selector not accepted by the complex Arnoldi driver",
-        ));
-    }
-    // See `eigenpairs_c64_impl` for why `nev` is bounded here.
-    let nev_i32 = c_int_from_usize(nev)?;
-    if n < nev + 3 {
-        return Err(Error::InvalidParam(
-            "n too small for complex Arnoldi (require n >= nev + 3)",
-        ));
-    }
-    let ncv = options
-        .ncv
-        .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 2));
+fn tol_as_f32(tol: f64) -> f32 {
+    tol as f32
+}
 
-    let n_i32 = c_int_from_usize(n)?;
-    let ncv_i32 = c_int_from_usize(ncv)?;
-    let max_iter_i32 = c_int_from_usize(options.max_iter)?;
-
-    if !(ncv_i32 >= nev_i32 + 2 && ncv_i32 < n_i32) {
-        return Err(Error::InvalidParam("require nev + 2 <= ncv and ncv < n"));
-    }
-    if max_iter_i32 <= 0 {
-        return Err(Error::InvalidParam("max_iter must be positive"));
-    }
-
-    let v_len = n
-        .checked_mul(ncv)
-        .ok_or(Error::InvalidParam("n * ncv overflows usize"))?;
-    let workd_len = n
-        .checked_mul(3)
-        .ok_or(Error::InvalidParam("3 * n overflows usize"))?;
-    let ncv_sq = ncv
-        .checked_mul(ncv)
-        .ok_or(Error::InvalidParam("ncv * ncv overflows usize"))?;
-    let three_ncv_sq = ncv_sq
-        .checked_mul(3)
-        .ok_or(Error::InvalidParam("3 * ncv^2 overflows usize"))?;
-    let five_ncv = ncv
-        .checked_mul(5)
-        .ok_or(Error::InvalidParam("5 * ncv overflows usize"))?;
-    let lworkl = three_ncv_sq
-        .checked_add(five_ncv)
-        .ok_or(Error::InvalidParam("3*ncv^2 + 5*ncv overflows usize"))?;
-    let workev_len = ncv
-        .checked_mul(2)
-        .ok_or(Error::InvalidParam("2 * ncv overflows usize"))?;
-
-    let lworkl_i32 = c_int_from_usize(lworkl)?;
-
-    let tol = options.tol as f32;
-    let zero = Complex32::new(0.0, 0.0);
-    let mut resid = vec![zero; n];
-    let mut v = vec![zero; v_len];
-    let ldv = n_i32;
-    let mut iparam = [0i32; 11];
-    iparam[0] = 1;
-    iparam[2] = max_iter_i32;
-    iparam[3] = 1;
-    iparam[6] = 1;
-    let mut ipntr = [0i32; 14];
-    let mut workd = vec![zero; workd_len];
-    let mut workl = vec![zero; lworkl];
-    let mut rwork = vec![0.0f32; ncv];
-
-    let bmat = c"I".as_ptr();
-    let which_ptr = which.as_c_str().as_ptr();
-
-    let _guard = lock();
-
-    let mut ido: c_int = 0;
-    let mut info: c_int = 0;
-    let mut x_buf = vec![zero; n];
-
-    loop {
-        // SAFETY: identical reasoning to `eigenpairs_c64_impl`,
-        // with `Complex32` storage instead of `Complex64`.
-        unsafe {
-            cnaupd_c(
-                &mut ido,
-                bmat,
-                n_i32,
-                which_ptr,
-                nev_i32,
-                tol,
-                resid.as_mut_ptr() as *mut __BindgenComplex<f32>,
-                ncv_i32,
-                v.as_mut_ptr() as *mut __BindgenComplex<f32>,
-                ldv,
-                iparam.as_mut_ptr(),
-                ipntr.as_mut_ptr(),
-                workd.as_mut_ptr() as *mut __BindgenComplex<f32>,
-                workl.as_mut_ptr() as *mut __BindgenComplex<f32>,
-                lworkl_i32,
-                rwork.as_mut_ptr(),
-                &mut info,
-            );
-        }
-
-        match ido {
-            -1 | 1 => {
-                let x_off = (ipntr[0] - 1) as usize;
-                let y_off = (ipntr[1] - 1) as usize;
-                debug_assert!(x_off + n <= workd.len() && y_off + n <= workd.len());
-                x_buf.copy_from_slice(&workd[x_off..x_off + n]);
-                matvec(&x_buf, &mut workd[y_off..y_off + n]);
+/// Generate a complex Arnoldi driver (`{c,z}{na,ne}upd_c`) for one
+/// scalar precision. The two ARPACK precisions differ only in the
+/// `Complex` scalar type, the underlying float used for the
+/// `__BindgenComplex<_>` pointer casts and `rwork`, the
+/// `*naupd_c` / `*neupd_c` symbol pair, and how `Options::tol` is
+/// narrowed; everything else — the `nev + 2 <= ncv < n` bounds,
+/// `lworkl = 3 * ncv^2 + 5 * ncv`, the `rwork[ncv]` / `workev[2*ncv]`
+/// scratch, `ipntr(14)`, and the `info = 1` decision tree — is
+/// identical, so the body is written once here and instantiated per
+/// precision. Named after the type set it spans (`Complex<f32>` /
+/// `Complex<f64>`), not "Scalar".
+macro_rules! impl_complex_arnoldi_driver {
+    ($fn:ident, $cty:ty, $float:ty, $aupd:path, $eupd:path, $tol:path) => {
+        fn $fn<F>(
+            n: usize,
+            nev: usize,
+            which: Which,
+            mut matvec: F,
+            options: &Options,
+        ) -> Result<MultiEigSolution<$cty>, Error>
+        where
+            F: FnMut(&[$cty], &mut [$cty]),
+        {
+            if nev == 0 {
+                return Err(Error::InvalidParam("nev must be positive"));
             }
-            99 => break,
-            other => return Err(Error::UnexpectedIdo(other)),
+            if !which.accepted_by_complex_arnoldi() {
+                return Err(Error::InvalidParam(
+                    "Which selector not accepted by the complex Arnoldi driver",
+                ));
+            }
+            // Bound `nev` (caller-controlled) to the `c_int` range before
+            // using it in `usize` arithmetic (`nev + 3`, `2 * nev + 4`,
+            // `nev + 2`, `nev_i32 + 2`). On 64-bit targets — the only ones
+            // supported per the workspace's `compile_error!` — the bounded
+            // value cannot overflow in those expressions; without this
+            // upfront check, `nev = usize::MAX` panics in debug builds.
+            let nev_i32 = c_int_from_usize(nev)?;
+            // Complex Arnoldi has a tighter constraint than real symmetric:
+            // `zneupd` rejects `ncv - nev < 2` with `info = -3`, so the
+            // smallest legal `ncv` is `nev + 2` and the precondition on
+            // `n` is `n >= nev + 3`.
+            if n < nev + 3 {
+                return Err(Error::InvalidParam(
+                    "n too small for complex Arnoldi (require n >= nev + 3)",
+                ));
+            }
+            let ncv = options
+                .ncv
+                .unwrap_or_else(|| (2 * nev + 4).min(n - 1).max(nev + 2));
+
+            let n_i32 = c_int_from_usize(n)?;
+            let ncv_i32 = c_int_from_usize(ncv)?;
+            let max_iter_i32 = c_int_from_usize(options.max_iter)?;
+
+            if !(ncv_i32 >= nev_i32 + 2 && ncv_i32 < n_i32) {
+                return Err(Error::InvalidParam("require nev + 2 <= ncv and ncv < n"));
+            }
+            if max_iter_i32 <= 0 {
+                return Err(Error::InvalidParam("max_iter must be positive"));
+            }
+
+            let v_len = n
+                .checked_mul(ncv)
+                .ok_or(Error::InvalidParam("n * ncv overflows usize"))?;
+            let workd_len = n
+                .checked_mul(3)
+                .ok_or(Error::InvalidParam("3 * n overflows usize"))?;
+            let ncv_sq = ncv
+                .checked_mul(ncv)
+                .ok_or(Error::InvalidParam("ncv * ncv overflows usize"))?;
+            let three_ncv_sq = ncv_sq
+                .checked_mul(3)
+                .ok_or(Error::InvalidParam("3 * ncv^2 overflows usize"))?;
+            let five_ncv = ncv
+                .checked_mul(5)
+                .ok_or(Error::InvalidParam("5 * ncv overflows usize"))?;
+            let lworkl = three_ncv_sq
+                .checked_add(five_ncv)
+                .ok_or(Error::InvalidParam("3*ncv^2 + 5*ncv overflows usize"))?;
+            let workev_len = ncv
+                .checked_mul(2)
+                .ok_or(Error::InvalidParam("2 * ncv overflows usize"))?;
+
+            let lworkl_i32 = c_int_from_usize(lworkl)?;
+
+            let tol = $tol(options.tol);
+            let zero = <$cty>::new(0.0, 0.0);
+            let mut resid = vec![zero; n];
+            let mut v = vec![zero; v_len];
+            let ldv = n_i32;
+            let mut iparam = [0i32; 11];
+            iparam[0] = 1; // exact shifts via ARPACK
+            iparam[2] = max_iter_i32;
+            iparam[3] = 1; // NB block size; ARPACK only supports NB = 1
+            iparam[6] = 1; // mode 1: standard problem A x = lambda x
+            // znaupd's ICB Fortran wrapper declares `ipntr(14)`, unlike
+            // dsaupd's `ipntr(11)`. Allocating shorter is an OOB write.
+            let mut ipntr = [0i32; 14];
+            let mut workd = vec![zero; workd_len];
+            let mut workl = vec![zero; lworkl];
+            let mut rwork: Vec<$float> = vec![0.0; ncv];
+
+            let bmat = c"I".as_ptr();
+            let which_ptr = which.as_c_str().as_ptr();
+
+            let _guard = lock();
+
+            let mut ido: c_int = 0;
+            let mut info: c_int = 0;
+            let mut x_buf = vec![zero; n];
+
+            loop {
+                // SAFETY: Every pointer aliases a Vec whose length matches
+                // (or exceeds) what ARPACK reads/writes; the `Complex<_>` ↔
+                // `__BindgenComplex<_>` cast is sound because both are
+                // `#[repr(C)] { re, im }`. The process-wide lock serializes
+                // ARPACK's Fortran SAVE state.
+                unsafe {
+                    $aupd(
+                        &mut ido,
+                        bmat,
+                        n_i32,
+                        which_ptr,
+                        nev_i32,
+                        tol,
+                        resid.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                        ncv_i32,
+                        v.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                        ldv,
+                        iparam.as_mut_ptr(),
+                        ipntr.as_mut_ptr(),
+                        workd.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                        workl.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                        lworkl_i32,
+                        rwork.as_mut_ptr(),
+                        &mut info,
+                    );
+                }
+
+                match ido {
+                    -1 | 1 => {
+                        let x_off = (ipntr[0] - 1) as usize;
+                        let y_off = (ipntr[1] - 1) as usize;
+                        debug_assert!(x_off + n <= workd.len() && y_off + n <= workd.len());
+                        x_buf.copy_from_slice(&workd[x_off..x_off + n]);
+                        matvec(&x_buf, &mut workd[y_off..y_off + n]);
+                    }
+                    99 => break,
+                    other => return Err(Error::UnexpectedIdo(other)),
+                }
+            }
+
+            // info handling (uniform with the symmetric driver per the
+            // research finding that zneupd guards `-14` on `nconv .le. 0`,
+            // not on `nconv < nev`):
+            // - info = 0           : full convergence, extract nev pairs.
+            // - info = 1, nconv=0  : MaxIterReached (skip *eupd; zneupd
+            //                        would return info = -14).
+            // - info = 1, nconv>=1 : call *eupd, extract `nconv` pairs.
+            // - other              : AupdFailed.
+            let nconv = usize_from_iparam(iparam[4]);
+            let iters = usize_from_iparam(iparam[2]);
+            let n_matvec = usize_from_iparam(iparam[8]);
+
+            if info == 1 && nconv == 0 {
+                return Err(Error::MaxIterReached {
+                    iters,
+                    nconv,
+                    n_matvec,
+                });
+            }
+            if info != 0 && info != 1 {
+                return Err(Error::AupdFailed(info));
+            }
+
+            let rvec: c_int = 1;
+            let howmny = c"A".as_ptr();
+            let mut select = vec![0i32; ncv];
+            let mut d = vec![zero; nev];
+            let sigma = __BindgenComplex::<$float> { re: 0.0, im: 0.0 };
+            let mut workev = vec![zero; workev_len];
+            let mut info_eup: c_int = 0;
+
+            // SAFETY: as for the *naupd_c call above; v doubles as z (output
+            // eigenvector storage), which is the standard ARPACK pattern.
+            unsafe {
+                $eupd(
+                    rvec,
+                    howmny,
+                    select.as_mut_ptr(),
+                    d.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                    v.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                    ldv,
+                    sigma,
+                    workev.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                    bmat,
+                    n_i32,
+                    which_ptr,
+                    nev_i32,
+                    tol,
+                    resid.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                    ncv_i32,
+                    v.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                    ldv,
+                    iparam.as_mut_ptr(),
+                    ipntr.as_mut_ptr(),
+                    workd.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                    workl.as_mut_ptr() as *mut __BindgenComplex<$float>,
+                    lworkl_i32,
+                    rwork.as_mut_ptr(),
+                    &mut info_eup,
+                );
+            }
+
+            if info_eup != 0 {
+                return Err(Error::EupdFailed(info_eup));
+            }
+
+            // Cap the surfaced count at `nev`: ARPACK may report
+            // `nconv > nev` ("bonus" Ritz values satisfying the convergence
+            // bound), but `d` is sized to `nev` per the documented `*eupd`
+            // interface, so slots beyond `nev` are not safely indexable.
+            // Preserve the raw `iparam[4]` count in `nconv` as a diagnostic;
+            // truncate the eigenvalue / eigenvector arrays to `nev`.
+            let extracted = nconv.min(nev);
+            let eigenvalues = d[..extracted].to_vec();
+            let mut eigenvectors = Vec::with_capacity(extracted);
+            for k in 0..extracted {
+                eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
+            }
+
+            Ok(MultiEigSolution {
+                eigenvalues,
+                eigenvectors,
+                nev_requested: nev,
+                nconv,
+                iters,
+                n_matvec,
+            })
         }
-    }
-
-    let nconv = usize_from_iparam(iparam[4]);
-    let iters = usize_from_iparam(iparam[2]);
-    let n_matvec = usize_from_iparam(iparam[8]);
-
-    if info == 1 && nconv == 0 {
-        return Err(Error::MaxIterReached {
-            iters,
-            nconv,
-            n_matvec,
-        });
-    }
-    if info != 0 && info != 1 {
-        return Err(Error::AupdFailed(info));
-    }
-
-    let rvec: c_int = 1;
-    let howmny = c"A".as_ptr();
-    let mut select = vec![0i32; ncv];
-    let mut d = vec![zero; nev];
-    let sigma = __BindgenComplex {
-        re: 0.0_f32,
-        im: 0.0_f32,
     };
-    let mut workev = vec![zero; workev_len];
-    let mut info_eup: c_int = 0;
-
-    // SAFETY: as for cnaupd_c above; v doubles as z (output
-    // eigenvector storage).
-    unsafe {
-        cneupd_c(
-            rvec,
-            howmny,
-            select.as_mut_ptr(),
-            d.as_mut_ptr() as *mut __BindgenComplex<f32>,
-            v.as_mut_ptr() as *mut __BindgenComplex<f32>,
-            ldv,
-            sigma,
-            workev.as_mut_ptr() as *mut __BindgenComplex<f32>,
-            bmat,
-            n_i32,
-            which_ptr,
-            nev_i32,
-            tol,
-            resid.as_mut_ptr() as *mut __BindgenComplex<f32>,
-            ncv_i32,
-            v.as_mut_ptr() as *mut __BindgenComplex<f32>,
-            ldv,
-            iparam.as_mut_ptr(),
-            ipntr.as_mut_ptr(),
-            workd.as_mut_ptr() as *mut __BindgenComplex<f32>,
-            workl.as_mut_ptr() as *mut __BindgenComplex<f32>,
-            lworkl_i32,
-            rwork.as_mut_ptr(),
-            &mut info_eup,
-        );
-    }
-
-    if info_eup != 0 {
-        return Err(Error::EupdFailed(info_eup));
-    }
-
-    // See `eigenpairs_c64_impl` for why extraction is capped at
-    // `nev`.
-    let extracted = nconv.min(nev);
-    let eigenvalues = d[..extracted].to_vec();
-    let mut eigenvectors = Vec::with_capacity(extracted);
-    for k in 0..extracted {
-        eigenvectors.push(v[k * n..(k + 1) * n].to_vec());
-    }
-
-    Ok(MultiEigSolution {
-        eigenvalues,
-        eigenvectors,
-        nev_requested: nev,
-        nconv,
-        iters,
-        n_matvec,
-    })
 }
+
+impl_complex_arnoldi_driver!(
+    eigenpairs_c64_impl,
+    Complex64,
+    f64,
+    znaupd_c,
+    zneupd_c,
+    tol_as_f64
+);
+impl_complex_arnoldi_driver!(
+    eigenpairs_c32_impl,
+    Complex32,
+    f32,
+    cnaupd_c,
+    cneupd_c,
+    tol_as_f32
+);
 
 fn c_int_from_usize(value: usize) -> Result<c_int, Error> {
     c_int::try_from(value).map_err(|_| Error::InvalidParam("value does not fit in c_int"))
