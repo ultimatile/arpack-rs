@@ -189,9 +189,10 @@ fn singular_from_multi<T>(multi: MultiEigSolution<T>) -> EigSolution<T> {
 }
 
 /// Narrow `Options::tol` (always stored as `f64`) to the driver's
-/// working float precision. Routed through named functions rather than
-/// an inline `options.tol as $float` so the `f64` instantiation is an
-/// identity, not an `f64 as f64` that trips `clippy::unnecessary_cast`.
+/// working float precision. The macro selects one of these by name so
+/// the f64 path is the identity `tol_as_f64` rather than an `f64 as f64`
+/// that would trip `clippy::unnecessary_cast`; the f32 path does the
+/// real `as f32` narrowing.
 fn tol_as_f64(tol: f64) -> f64 {
     tol
 }
