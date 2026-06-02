@@ -21,7 +21,10 @@ use arpack_sys::{dsaupd_c, dseupd_c, ssaupd_c, sseupd_c};
 
 use crate::error::Error;
 use crate::lock::lock;
-use crate::solution::{EigSolution, MultiEigSolution, usize_from_iparam};
+use crate::solution::{
+    EigSolution, MultiEigSolution, c_int_from_usize, singular_from_multi, tol_as_f32, tol_as_f64,
+    usize_from_iparam,
+};
 use crate::which::Which;
 
 /// Tunable parameters for the Lanczos driver.
@@ -155,41 +158,6 @@ where
 {
     let multi = eigenpairs_f32(n, 1, Which::SmallestAlgebraic, matvec, options)?;
     Ok(singular_from_multi(multi))
-}
-
-fn singular_from_multi<T>(multi: MultiEigSolution<T>) -> EigSolution<T> {
-    // info = 0 from *aupd guarantees nconv >= nev = 1, so the
-    // vectors are non-empty. The partial-Ok branch (0 < nconv < nev)
-    // is unreachable at nev = 1 — there is no integer strictly
-    // between 0 and 1.
-    let mut eigenvalues = multi.eigenvalues;
-    let mut eigenvectors = multi.eigenvectors;
-    let eigenvalue = eigenvalues
-        .pop()
-        .expect("eigenpairs_* with nev=1 returns at least one Ritz value on Ok");
-    let eigenvector = eigenvectors
-        .pop()
-        .expect("eigenpairs_* with nev=1 returns at least one eigenvector on Ok");
-    EigSolution {
-        eigenvalue,
-        eigenvector,
-        iters: multi.iters,
-        nconv: multi.nconv,
-        n_matvec: multi.n_matvec,
-    }
-}
-
-/// Narrow `Options::tol` (always stored as `f64`) to the driver's
-/// working precision. The macro selects one of these by name so the
-/// f64 path is the identity `tol_as_f64` rather than an `f64 as f64`
-/// that would trip `clippy::unnecessary_cast`; the f32 path does the
-/// real `as f32` narrowing.
-fn tol_as_f64(tol: f64) -> f64 {
-    tol
-}
-
-fn tol_as_f32(tol: f64) -> f32 {
-    tol as f32
 }
 
 /// Generate a real-symmetric Lanczos driver (`{s,d}{sa,se}upd_c`)
@@ -425,7 +393,3 @@ macro_rules! impl_real_sym_driver {
 
 impl_real_sym_driver!(eigenpairs_f64_impl, f64, dsaupd_c, dseupd_c, tol_as_f64);
 impl_real_sym_driver!(eigenpairs_f32_impl, f32, ssaupd_c, sseupd_c, tol_as_f32);
-
-fn c_int_from_usize(value: usize) -> Result<c_int, Error> {
-    c_int::try_from(value).map_err(|_| Error::InvalidParam("value does not fit in c_int"))
-}

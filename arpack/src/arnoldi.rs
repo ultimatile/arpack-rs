@@ -30,7 +30,10 @@ use num_complex::{Complex32, Complex64};
 
 use crate::error::Error;
 use crate::lock::lock;
-use crate::solution::{EigSolution, MultiEigSolution, usize_from_iparam};
+use crate::solution::{
+    EigSolution, MultiEigSolution, c_int_from_usize, singular_from_multi, tol_as_f32, tol_as_f64,
+    usize_from_iparam,
+};
 use crate::which::Which;
 
 /// Tunable parameters for the complex Arnoldi driver. The fields
@@ -168,37 +171,6 @@ where
 {
     let multi = eigenpairs_c32(n, 1, Which::SmallestRealPart, matvec, options)?;
     Ok(singular_from_multi(multi))
-}
-
-fn singular_from_multi<T>(multi: MultiEigSolution<T>) -> EigSolution<T> {
-    let mut eigenvalues = multi.eigenvalues;
-    let mut eigenvectors = multi.eigenvectors;
-    let eigenvalue = eigenvalues
-        .pop()
-        .expect("eigenpairs_* with nev=1 returns at least one Ritz value on Ok");
-    let eigenvector = eigenvectors
-        .pop()
-        .expect("eigenpairs_* with nev=1 returns at least one eigenvector on Ok");
-    EigSolution {
-        eigenvalue,
-        eigenvector,
-        iters: multi.iters,
-        nconv: multi.nconv,
-        n_matvec: multi.n_matvec,
-    }
-}
-
-/// Narrow `Options::tol` (always stored as `f64`) to the driver's
-/// working float precision. The macro selects one of these by name so
-/// the f64 path is the identity `tol_as_f64` rather than an `f64 as f64`
-/// that would trip `clippy::unnecessary_cast`; the f32 path does the
-/// real `as f32` narrowing.
-fn tol_as_f64(tol: f64) -> f64 {
-    tol
-}
-
-fn tol_as_f32(tol: f64) -> f32 {
-    tol as f32
 }
 
 /// Generate a complex Arnoldi driver (`{c,z}{na,ne}upd_c`) for one
@@ -461,7 +433,3 @@ impl_complex_arnoldi_driver!(
     cneupd_c,
     tol_as_f32
 );
-
-fn c_int_from_usize(value: usize) -> Result<c_int, Error> {
-    c_int::try_from(value).map_err(|_| Error::InvalidParam("value does not fit in c_int"))
-}
