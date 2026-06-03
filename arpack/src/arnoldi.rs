@@ -28,7 +28,7 @@ use std::os::raw::c_int;
 use arpack_sys::{__BindgenComplex, cnaupd_c, cneupd_c, znaupd_c, zneupd_c};
 use num_complex::{Complex32, Complex64};
 
-use crate::error::Error;
+use crate::error::{Error, aupd_error, eupd_error};
 use crate::lock::lock;
 use crate::solution::{
     EigSolution, MultiEigSolution, c_int_from_usize, singular_from_multi, tol_as_f32, tol_as_f64,
@@ -328,25 +328,18 @@ macro_rules! impl_complex_arnoldi_driver {
 
             // info handling (uniform with the symmetric driver per the
             // research finding that zneupd guards `-14` on `nconv .le. 0`,
-            // not on `nconv < nev`):
+            // not on `nconv < nev`), mapped by `aupd_error`:
             // - info = 0           : full convergence, extract nev pairs.
             // - info = 1, nconv=0  : MaxIterReached (skip *eupd; zneupd
             //                        would return info = -14).
             // - info = 1, nconv>=1 : call *eupd, extract `nconv` pairs.
-            // - other              : AupdFailed.
+            // - info = 3 / -9999 / other non-zero → typed error.
             let nconv = usize_from_iparam(iparam[4]);
             let iters = usize_from_iparam(iparam[2]);
             let n_matvec = usize_from_iparam(iparam[8]);
 
-            if info == 1 && nconv == 0 {
-                return Err(Error::MaxIterReached {
-                    iters,
-                    nconv,
-                    n_matvec,
-                });
-            }
-            if info != 0 && info != 1 {
-                return Err(Error::AupdFailed(info));
+            if let Some(err) = aupd_error(info, iters, nconv, n_matvec) {
+                return Err(err);
             }
 
             let rvec: c_int = 1;
@@ -388,8 +381,8 @@ macro_rules! impl_complex_arnoldi_driver {
                 );
             }
 
-            if info_eup != 0 {
-                return Err(Error::EupdFailed(info_eup));
+            if let Some(err) = eupd_error(info_eup, iters, nconv, n_matvec) {
+                return Err(err);
             }
 
             // Cap the surfaced count at `nev`: ARPACK may report

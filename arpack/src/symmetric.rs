@@ -19,7 +19,7 @@ use std::os::raw::c_int;
 
 use arpack_sys::{dsaupd_c, dseupd_c, ssaupd_c, sseupd_c};
 
-use crate::error::Error;
+use crate::error::{Error, aupd_error, eupd_error};
 use crate::lock::lock;
 use crate::solution::{
     EigSolution, MultiEigSolution, c_int_from_usize, singular_from_multi, tol_as_f32, tol_as_f64,
@@ -295,7 +295,8 @@ macro_rules! impl_real_sym_driver {
                 }
             }
 
-            // info handling per the unified two-stage protocol:
+            // info handling per the unified two-stage protocol, mapped by
+            // `aupd_error`:
             // - info = 0  : full convergence, extract nev Ritz pairs.
             // - info = 1  : max_iter hit. Read iparam[4] = nconv:
             //     * nconv == 0  → MaxIterReached (skip *eupd; dseupd would
@@ -304,20 +305,13 @@ macro_rules! impl_real_sym_driver {
             //                     zeroed).
             //     * nconv >= 1  → call *eupd, extract `nconv` valid pairs
             //                     (dseupd accepts partial extraction).
-            // - info < 0 / other info > 1 → AupdFailed.
+            // - info = 3 / -9999 / other non-zero → typed error.
             let nconv = usize_from_iparam(iparam[4]);
             let iters = usize_from_iparam(iparam[2]);
             let n_matvec = usize_from_iparam(iparam[8]);
 
-            if info == 1 && nconv == 0 {
-                return Err(Error::MaxIterReached {
-                    iters,
-                    nconv,
-                    n_matvec,
-                });
-            }
-            if info != 0 && info != 1 {
-                return Err(Error::AupdFailed(info));
+            if let Some(err) = aupd_error(info, iters, nconv, n_matvec) {
+                return Err(err);
             }
             // At this point: info == 0 (nconv typically == nev) or
             // info == 1 && nconv >= 1 (partial-Ok path). Both call *eupd.
@@ -359,8 +353,8 @@ macro_rules! impl_real_sym_driver {
                 );
             }
 
-            if info_eup != 0 {
-                return Err(Error::EupdFailed(info_eup));
+            if let Some(err) = eupd_error(info_eup, iters, nconv, n_matvec) {
+                return Err(err);
             }
 
             // ARPACK wrote d[..nconv] and v[.., 0..nconv] (column-major).
