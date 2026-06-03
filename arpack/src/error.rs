@@ -116,7 +116,10 @@ pub enum Error {
         iters: usize,
         /// `iparam[4]` writeback — for this code, IPARAM(5) returns the
         /// size of the Arnoldi factorization ARPACK did manage to build.
-        nconv: usize,
+        /// Named distinctly from the `nconv` (converged Ritz count)
+        /// field on the other variants because the same slot means a
+        /// different thing here.
+        factorization_size: usize,
         /// `iparam[8]` writeback — operator applications performed.
         n_matvec: usize,
     },
@@ -168,13 +171,13 @@ impl fmt::Display for Error {
             ),
             Error::ArnoldiFactorizationFailed {
                 iters,
-                nconv,
+                factorization_size,
                 n_matvec,
             } => write!(
                 f,
                 "ARPACK could not build an Arnoldi factorization (info = -9999); \
-                 built a factorization of size {nconv}. Try increasing max_iter \
-                 or ncv. iters = {iters}, n_matvec = {n_matvec}"
+                 built a factorization of size {factorization_size}. Try increasing \
+                 max_iter or ncv. iters = {iters}, n_matvec = {n_matvec}"
             ),
         }
     }
@@ -212,7 +215,7 @@ pub(crate) fn aupd_error(info: i32, iters: usize, nconv: usize, n_matvec: usize)
         }),
         -9999 => Some(Error::ArnoldiFactorizationFailed {
             iters,
-            nconv,
+            factorization_size: nconv,
             n_matvec,
         }),
         info => Some(Error::AupdFailed {
@@ -284,7 +287,7 @@ mod tests {
             aupd_error(-9999, 5, 2, 7),
             Some(Error::ArnoldiFactorizationFailed {
                 iters: 5,
-                nconv: 2,
+                factorization_size: 2,
                 n_matvec: 7
             })
         ));
@@ -332,7 +335,7 @@ mod tests {
 
         let build = Error::ArnoldiFactorizationFailed {
             iters: 3,
-            nconv: 1,
+            factorization_size: 1,
             n_matvec: 4,
         };
         assert!(build.to_string().contains("-9999"));
