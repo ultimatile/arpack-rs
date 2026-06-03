@@ -232,8 +232,8 @@ fn explicit_ncv_equals_nev_plus_one_is_rejected() {
     // otherwise). For nev = 1, that means `ncv == 2` is illegal even
     // though it satisfies the looser symmetric-driver constraint
     // `ncv > nev`. The wrapper must reject `ncv = nev + 1` up front
-    // so callers do not see a late EupdFailed(-3) after running the
-    // full reverse-communication loop.
+    // so callers do not see a late EupdFailed { info: -3, .. } after
+    // running the full reverse-communication loop.
     let n = 8;
     let result = smallest_eigenpair_c64(
         n,
